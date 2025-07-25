@@ -12,6 +12,12 @@ import time
 from spacy.matcher import Matcher
 from datetime import datetime, timedelta
 
+# Lazy-load Whisper model to avoid large image size during build
+def get_whisper_model():
+    if not hasattr(get_whisper_model, "model"):
+        get_whisper_model.model = whisper.load_model("tiny")
+    return get_whisper_model.model
+
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -244,6 +250,7 @@ def transcribe():
     try:
         audio_file.save(audio_path)
         logger.debug("Audio file saved to: %s", audio_path)
+        model = get_whisper_model()
         result = model.transcribe(audio_path)
         logger.debug("Transcription result: %s", result["text"])
         if os.path.exists(audio_path):
