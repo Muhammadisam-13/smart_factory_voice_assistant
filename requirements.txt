@@ -1,5 +1,6 @@
 flask==3.0.3
-openai-whisper==20240930
+faster-whisper==0.11.0 # Using a specific version for stability
 pymongo==4.8.0
 spacy==3.7.5
 gTTS==2.5.3
+gunicorn==22.0.0 # Added for production deployment
