@@ -1,7 +1,6 @@
 import logging
 from flask import Flask, request, send_file, jsonify
 from flask_cors import CORS
-# Changed from 'import whisper' to 'from faster_whisper import WhisperModel'
 from faster_whisper import WhisperModel
 import spacy
 import spacy.cli
@@ -27,8 +26,6 @@ os.makedirs("static", exist_ok=True)
 # Lazy-load Whisper model using faster-whisper
 def get_whisper_model():
     if not hasattr(get_whisper_model, "model"):
-        # Load the 'tiny' model with 'int8' quantization for smallest size
-        # 'device="cpu"' is specified as you likely don't have a GPU in a free tier
         logger.info("Loading faster-whisper 'tiny' model with int8 quantization...")
         get_whisper_model.model = WhisperModel("tiny", device="cpu", compute_type="int8")
         logger.info("Faster-whisper model loaded.")
@@ -56,7 +53,6 @@ try:
     logger.info("MongoDB connection successful.")
 except Exception as e:
     logger.error("MongoDB connection failed: %s", e)
-    # Re-raise the exception to prevent the app from starting without DB
     raise
 
 # Setup Matcher
@@ -129,7 +125,6 @@ def get_sensor_data(intent, entity_name, entity_type):
 
     if intent in ["cartons_produced", "cartons_sold"]:
         field = "cartons_produced" if intent == "cartons_produced" else "cartons_sold"
-        # Using ISO format for DateTime in MongoDB
         start_date = datetime.now() - timedelta(days=7)
         result = analytics.aggregate([
             {"$match": {field: {"$exists": True}, "DateTime": {"$gte": start_date.isoformat()}}},
@@ -163,6 +158,11 @@ def cleanup_audio_files():
 
 atexit.register(cleanup_audio_files)
 
+# NEW: Root route for basic accessibility
+@app.route("/", methods=["GET"])
+def index():
+    return "Smart Factory Voice Assistant API is running! Use /transcribe or /process_command endpoints."
+
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "healthy"})
@@ -175,7 +175,6 @@ def transcribe():
     try:
         request.files["audio"].save(path)
         model = get_whisper_model()
-        # faster-whisper returns segments, so we join them to get the full text
         segments, info = model.transcribe(path)
         transcribed_text = " ".join([segment.text for segment in segments])
         
@@ -215,9 +214,5 @@ def serve_audio(filename):
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    # Use gunicorn for production, but for local Flask's dev server is fine
-    # For local development, you can run: python app.py
-    # For production, you would run: gunicorn --bind 0.0.0.0:5000 app:app
     logger.info(f"Starting Flask app on port {port}")
     app.run(host="0.0.0.0", port=port)
-
