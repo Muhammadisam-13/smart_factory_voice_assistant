@@ -1,6 +1,6 @@
 flask==3.0.3
-faster-whisper==0.11.0 # Using a specific version for stability
+faster-whisper==1.1.1 # Corrected version
 pymongo==4.8.0
 spacy==3.7.5
 gTTS==2.5.3
-gunicorn==22.0.0 # Added for production deployment
+gunicorn==22.0.0
