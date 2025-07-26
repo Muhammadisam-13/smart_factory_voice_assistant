@@ -1,7 +1,8 @@
 import logging
 from flask import Flask, request, send_file, jsonify
 from flask_cors import CORS
-import whisper
+# Changed from 'import whisper' to 'from faster_whisper import WhisperModel'
+from faster_whisper import WhisperModel
 import spacy
 import spacy.cli
 from pymongo import MongoClient
@@ -13,12 +14,6 @@ import time
 from spacy.matcher import Matcher
 from datetime import datetime, timedelta
 
-# Lazy-load Whisper model
-def get_whisper_model():
-    if not hasattr(get_whisper_model, "model"):
-        get_whisper_model.model = whisper.load_model("tiny")
-    return get_whisper_model.model
-
 # Setup logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -29,11 +24,24 @@ CORS(app)
 # Ensure static directory exists
 os.makedirs("static", exist_ok=True)
 
+# Lazy-load Whisper model using faster-whisper
+def get_whisper_model():
+    if not hasattr(get_whisper_model, "model"):
+        # Load the 'tiny' model with 'int8' quantization for smallest size
+        # 'device="cpu"' is specified as you likely don't have a GPU in a free tier
+        logger.info("Loading faster-whisper 'tiny' model with int8 quantization...")
+        get_whisper_model.model = WhisperModel("tiny", device="cpu", compute_type="int8")
+        logger.info("Faster-whisper model loaded.")
+    return get_whisper_model.model
+
 # Ensure spaCy model is downloaded
 try:
     spacy.load("en_core_web_sm")
-except:
+    logger.info("spaCy 'en_core_web_sm' model already loaded.")
+except OSError:
+    logger.warning("spaCy 'en_core_web_sm' model not found, downloading...")
     spacy.cli.download("en_core_web_sm")
+    logger.info("spaCy 'en_core_web_sm' model downloaded.")
 nlp = spacy.load("en_core_web_sm")
 
 # MongoDB setup
@@ -43,8 +51,12 @@ try:
     db = client["smart_factory"]
     sensors = db["sensors"]
     analytics = db["analytics"]
+    # Test connection
+    client.server_info()
+    logger.info("MongoDB connection successful.")
 except Exception as e:
     logger.error("MongoDB connection failed: %s", e)
+    # Re-raise the exception to prevent the app from starting without DB
     raise
 
 # Setup Matcher
@@ -117,6 +129,7 @@ def get_sensor_data(intent, entity_name, entity_type):
 
     if intent in ["cartons_produced", "cartons_sold"]:
         field = "cartons_produced" if intent == "cartons_produced" else "cartons_sold"
+        # Using ISO format for DateTime in MongoDB
         start_date = datetime.now() - timedelta(days=7)
         result = analytics.aggregate([
             {"$match": {field: {"$exists": True}, "DateTime": {"$gte": start_date.isoformat()}}},
@@ -145,8 +158,8 @@ def cleanup_audio_files():
     for f in glob.glob("static/response_*.mp3"):
         try:
             os.remove(f)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Error removing audio file {f}: {e}")
 
 atexit.register(cleanup_audio_files)
 
@@ -159,22 +172,29 @@ def transcribe():
     if "audio" not in request.files:
         return jsonify({"error": "No audio file provided"}), 400
     path = "temp.wav"
-    request.files["audio"].save(path)
     try:
+        request.files["audio"].save(path)
         model = get_whisper_model()
-        result = model.transcribe(path)
-        os.remove(path)
-        return jsonify({"text": result["text"]})
+        # faster-whisper returns segments, so we join them to get the full text
+        segments, info = model.transcribe(path)
+        transcribed_text = " ".join([segment.text for segment in segments])
+        
+        return jsonify({"text": transcribed_text})
     except Exception as e:
-        if os.path.exists(path): os.remove(path)
+        logger.error(f"Transcription error: {e}")
         return jsonify({"error": str(e)}), 500
+    finally:
+        if os.path.exists(path):
+            os.remove(path)
 
 @app.route("/process_command", methods=["POST"])
 def process_command():
     text = request.get_json().get("text", "")
+    logger.info(f"Processing command: {text}")
     intent, entity_name, entity_type = parse_command(text)
     if intent:
         response = get_sensor_data(intent, entity_name, entity_type)
+        logger.info(f"Generated response: {response}")
         audio_file = text_to_speech(response)
         audio_name = os.path.basename(audio_file) if audio_file else None
         return jsonify({
@@ -182,6 +202,7 @@ def process_command():
             "audio_filename": audio_name,
             "audio_url": f"/audio/{audio_name}" if audio_name else None
         })
+    logger.warning(f"Could not understand command: {text}")
     return jsonify({"error": f"Could not understand: {text}"}), 400
 
 @app.route("/audio/<filename>", methods=["GET"])
@@ -189,8 +210,14 @@ def serve_audio(filename):
     try:
         return send_file(os.path.join("static", filename), mimetype="audio/mpeg")
     except FileNotFoundError:
+        logger.error(f"Audio file not found: {filename}")
         return jsonify({"error": "File not found"}), 404
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
+    # Use gunicorn for production, but for local Flask's dev server is fine
+    # For local development, you can run: python app.py
+    # For production, you would run: gunicorn --bind 0.0.0.0:5000 app:app
+    logger.info(f"Starting Flask app on port {port}")
     app.run(host="0.0.0.0", port=port)
+
