@@ -43,7 +43,7 @@ nlp = spacy.load("en_core_web_sm")
 
 # MongoDB setup
 try:
-    MONGODB_URI = os.environ.get("MONGODB_URI", "mongodb://localhost:27017/")
+    MONGODB_URI = os.environ.get("MONGODB_URI", "mongodb+srv://factory:1234@cluster0.t2zyjyl.mongodb.net/SmartFactory")
     client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
     db = client["smart_factory"]
     sensors = db["sensors"]
