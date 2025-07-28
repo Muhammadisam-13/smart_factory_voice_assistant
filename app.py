@@ -4,7 +4,7 @@ from flask_cors import CORS
 from faster_whisper import WhisperModel
 import spacy
 import spacy.cli
-from pymongo import MongoClient
+from pymongo import MongoClient # Still imported, but less used for sensor data
 from gtts import gTTS
 import os
 import glob
@@ -12,7 +12,7 @@ import atexit
 import time
 from spacy.matcher import Matcher
 from datetime import datetime, timedelta
-import requests # Still needed for making HTTP requests
+import requests
 
 # Setup logging
 logging.basicConfig(level=logging.DEBUG)
@@ -42,19 +42,21 @@ except OSError:
     logger.info("spaCy 'en_core_web_sm' model downloaded.")
 nlp = spacy.load("en_core_web_sm")
 
-# MongoDB setup
+# MongoDB setup (kept for analytics if still needed, but sensor data will come from external API)
 try:
     MONGODB_URI = os.environ.get("MONGODB_URI", "mongodb+srv://factory:1234@cluster0.t2zyjyl.mongodb.net/SmartFactory")
     client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
     db = client["SmartFactory"] 
-    sensors = db["sensors"]
-    analytics = db["analytics"]
+    # sensors = db["sensors"] # No longer directly used for sensor data
+    analytics = db["analytics"] # Keep if you still need analytics data
     # Test connection
     client.server_info()
     logger.info("MongoDB connection successful.")
 except Exception as e:
     logger.error("MongoDB connection failed: %s", e)
-    raise
+    # Don't raise if analytics is optional, but for core functionality, keep it.
+    # For now, we'll let it pass if only analytics is affected and sensor data comes from external API.
+    # raise # Uncomment if MongoDB connection is critical for other parts
 
 # Setup Matcher
 matcher = Matcher(nlp.vocab)
@@ -110,38 +112,93 @@ field_map = {
     "smoke": ("smoke", "parts per million")
 }
 
+# External API Configuration
+EXTERNAL_API_BASE_URL = "https://smart-factory-five.vercel.app"
+
+# Helper function to fetch data from the external API
+def _fetch_all_external_data_internal():
+    external_api_url = f"{EXTERNAL_API_BASE_URL}/data/all"
+    try:
+        logger.info(f"Fetching data from external API: {external_api_url}")
+        response = requests.get(external_api_url)
+        response.raise_for_status() # Raise an exception for HTTP errors (4xx or 5xx)
+        data = response.json()
+        logger.info("Successfully fetched data from external API.")
+        return data
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error fetching data from external API: {e}")
+        return None # Return None on failure
+    except ValueError as e:
+        logger.error(f"Error parsing JSON from external API: {e}")
+        return None # Return None on failure
+
 def get_sensor_data(intent, entity_name, entity_type):
-    # This function still uses MongoDB directly.
-    # If you want to use the external API data here,
-    # this function would need significant refactoring.
+    # Fetch data from the external API first
+    all_data = _fetch_all_external_data_internal()
+    if not all_data:
+        return "I'm sorry, I couldn't retrieve the latest factory data."
+
+    rooms_data = all_data.get("rooms", [])
+    machines_data = all_data.get("machines", [])
+    cartons_num = all_data.get("cartons_num", 0)
+
+    # Handle intents related to machine status (normal_operation, not_normal, clogged_filter, bearing_wear)
     if intent in ["normal_operation", "not_normal", "clogged_filter", "bearing_wear"]:
-        filter_map = {
-            "normal_operation": {"maintenance": "Normal Operation"},
-            "not_normal": {"maintenance": {"$ne": "Normal Operation"}},
-            "clogged_filter": {"maintenance": "Clogged Filter"},
-            "bearing_wear": {"maintenance": "Bearing Wear"}
-        }
-        q = sensors.find({"type": "machine", **filter_map[intent]})
-        result = [x["name"] for x in q]
-        if not result:
-            return "No machines found for that status"
-        return f"The machines with {intent.replace('_', ' ')} are: {', '.join(result)}" # Corrected line
+        matching_machines = []
+        for machine in machines_data:
+            if "maintenance" in machine:
+                if intent == "normal_operation" and machine["maintenance"] == "Normal Operation":
+                    matching_machines.append(machine["name"])
+                elif intent == "not_normal" and machine["maintenance"] != "Normal Operation":
+                    matching_machines.append(machine["name"])
+                elif intent == "clogged_filter" and machine["maintenance"] == "Clogged Filter":
+                    matching_machines.append(machine["name"])
+                elif intent == "bearing_wear" and machine["maintenance"] == "Bearing Wear":
+                    matching_machines.append(machine["name"])
+        
+        if not matching_machines:
+            return f"No machines found with {intent.replace('_', ' ')} status."
+        return f"The machines with {intent.replace('_', ' ')} are: {', '.join(matching_machines)}."
 
+    # Handle intents related to cartons produced/sold (using data from external API)
     if intent in ["cartons_produced", "cartons_sold"]:
-        field = "cartons_produced" if intent == "cartons_produced" else "cartons_sold"
-        start_date = datetime.now() - timedelta(days=7)
-        result = analytics.aggregate([
-            {"$match": {field: {"$exists": True}, "DateTime": {"$gte": start_date.isoformat()}}},
-            {"$group": {"_id": None, "total": {"$sum": f"${field}"}}}
-        ])
-        total = next(result, {}).get("total", 0)
-        return f"This week, {total} {intent.replace('_', ' ')}" if total else f"No {intent.replace('_', ' ')} data found"
+        # The external API provides 'cartons_num' directly, not a time-series for produced/sold.
+        # Assuming 'cartons_num' represents a total or current count.
+        # If 'cartons_produced' and 'cartons_sold' need historical data,
+        # you'd need that from the external API or your MongoDB analytics.
+        if intent == "cartons_produced":
+            return f"The total number of cartons produced is currently {cartons_num}."
+        elif intent == "cartons_sold":
+            # The external API doesn't seem to have a 'cartons_sold' field directly.
+            # You might need to clarify this with your team or use your own analytics DB.
+            return "I can tell you the total cartons, but not specifically cartons sold from this data."
+        
+    # Handle specific sensor data requests (temperature, noise, humidity, smoke, vibration, power_usage)
+    # Search in machines_data first, then rooms_data
+    target_entity = None
+    if entity_type == "machine":
+        for machine in machines_data:
+            if machine["name"].lower() == entity_name.lower():
+                target_entity = machine
+                break
+    elif entity_type == "room":
+        for room in rooms_data:
+            if room["name"].lower() == entity_name.lower():
+                target_entity = room
+                break
 
-    field, unit = field_map.get(intent, (intent, ""))
-    doc = sensors.find_one({"type": entity_type, "name": entity_name})
-    if doc and field in doc:
-        return f"The {intent.replace('_', ' ')} of the {entity_name} is {doc[field]} {unit}"
-    return f"No data found for {entity_name}"
+    if target_entity:
+        field, unit = field_map.get(intent, (intent, ""))
+        if field in target_entity:
+            return f"The {intent.replace('_', ' ')} of the {target_entity['name']} is {target_entity[field]} {unit}."
+        elif intent == "lights" and "lights" in target_entity and entity_type == "room":
+             # Special handling for lights in rooms
+            light_statuses = ["on" if l else "off" for l in target_entity["lights"]]
+            return f"The lights in the {target_entity['name']} are currently {', '.join(light_statuses)}."
+        return f"No {intent.replace('_', ' ')} data found for {target_entity['name']}."
+    
+    return f"No data found for {entity_name}."
+
 
 def text_to_speech(text):
     try:
@@ -162,9 +219,6 @@ def cleanup_audio_files():
 
 atexit.register(cleanup_audio_files)
 
-# External API Configuration
-EXTERNAL_API_BASE_URL = "https://smart-factory-five.vercel.app"
-
 @app.route("/", methods=["GET"])
 def index():
     return "Smart Factory Voice Assistant API is running! Use /transcribe or /process_command endpoints."
@@ -173,25 +227,15 @@ def index():
 def health():
     return jsonify({"status": "healthy"})
 
-# NEW ROUTE: Fetch all data from the external MERN API (NO TOKEN REQUIRED)
+# Route to directly fetch all data from the external MERN API
+# This route is for external clients to call if they need the raw data.
+# The internal helper function `_fetch_all_external_data_internal` is used by `get_sensor_data`.
 @app.route("/data/fetch_all_external", methods=["GET"])
 def fetch_all_external_data():
-    external_api_url = f"{EXTERNAL_API_BASE_URL}/data/all"
-
-    try:
-        logger.info(f"Attempting to fetch data from external API: {external_api_url}")
-        response = requests.get(external_api_url) # Removed headers
-        response.raise_for_status() # Raise an exception for HTTP errors (4xx or 5xx)
-        
-        data = response.json()
-        logger.info("Successfully fetched data from external API.")
+    data = _fetch_all_external_data_internal()
+    if data:
         return jsonify(data)
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error fetching data from external API: {e}")
-        return jsonify({"error": f"Failed to fetch data from external API: {e}"}), 500
-    except ValueError as e:
-        logger.error(f"Error parsing JSON from external API: {e}")
-        return jsonify({"error": f"Failed to parse response from external API: {e}"}), 500
+    return jsonify({"error": "Failed to fetch data from external API."}), 500
 
 
 @app.route("/transcribe", methods=["POST"])
