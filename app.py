@@ -42,21 +42,21 @@ except OSError:
     logger.info("spaCy 'en_core_web_sm' model downloaded.")
 nlp = spacy.load("en_core_web_sm")
 
-# MongoDB setup (kept for analytics if still needed, but sensor data will come from external API)
-try:
-    MONGODB_URI = os.environ.get("MONGODB_URI", "mongodb+srv://factory:1234@cluster0.t2zyjyl.mongodb.net/SmartFactory")
-    client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
-    db = client["SmartFactory"] 
-    # sensors = db["sensors"] # No longer directly used for sensor data
-    analytics = db["analytics"] # Keep if you still need analytics data
-    # Test connection
-    client.server_info()
-    logger.info("MongoDB connection successful.")
-except Exception as e:
-    logger.error("MongoDB connection failed: %s", e)
-    # Don't raise if analytics is optional, but for core functionality, keep it.
-    # For now, we'll let it pass if only analytics is affected and sensor data comes from external API.
-    # raise # Uncomment if MongoDB connection is critical for other parts
+# # MongoDB setup (kept for analytics if still needed, but sensor data will come from external API)
+# try:
+#     MONGODB_URI = os.environ.get("MONGODB_URI", "mongodb+srv://factory:1234@cluster0.t2zyjyl.mongodb.net/SmartFactory")
+#     client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
+#     db = client["SmartFactory"] 
+#     # sensors = db["sensors"] # No longer directly used for sensor data
+#     analytics = db["analytics"] # Keep if you still need analytics data
+#     # Test connection
+#     client.server_info()
+#     logger.info("MongoDB connection successful.")
+# except Exception as e:
+#     logger.error("MongoDB connection failed: %s", e)
+#     # Don't raise if analytics is optional, but for core functionality, keep it.
+#     # For now, we'll let it pass if only analytics is affected and sensor data comes from external API.
+#     # raise # Uncomment if MongoDB connection is critical for other parts
 
 # Setup Matcher
 matcher = Matcher(nlp.vocab)
@@ -113,7 +113,7 @@ field_map = {
 }
 
 # External API Configuration
-EXTERNAL_API_BASE_URL = "https://smart-factory-five.vercel.app"
+EXTERNAL_API_BASE_URL = "https://model-deployed-production.up.railway.app"
 
 # Helper function to fetch data from the external API
 def _fetch_all_external_data_internal():
