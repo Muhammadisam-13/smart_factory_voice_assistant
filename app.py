@@ -12,6 +12,7 @@ import atexit
 import time
 from spacy.matcher import Matcher
 from datetime import datetime, timedelta
+import requests # Still needed for making HTTP requests
 
 # Setup logging
 logging.basicConfig(level=logging.DEBUG)
@@ -45,7 +46,7 @@ nlp = spacy.load("en_core_web_sm")
 try:
     MONGODB_URI = os.environ.get("MONGODB_URI", "mongodb+srv://factory:1234@cluster0.t2zyjyl.mongodb.net/SmartFactory")
     client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
-    db = client["smart_factory"]
+    db = client["SmartFactory"] 
     sensors = db["sensors"]
     analytics = db["analytics"]
     # Test connection
@@ -110,6 +111,9 @@ field_map = {
 }
 
 def get_sensor_data(intent, entity_name, entity_type):
+    # This function still uses MongoDB directly.
+    # If you want to use the external API data here,
+    # this function would need significant refactoring.
     if intent in ["normal_operation", "not_normal", "clogged_filter", "bearing_wear"]:
         filter_map = {
             "normal_operation": {"maintenance": "Normal Operation"},
@@ -121,7 +125,7 @@ def get_sensor_data(intent, entity_name, entity_type):
         result = [x["name"] for x in q]
         if not result:
             return "No machines found for that status"
-        return f"The machines with {intent.replace('_', ' ')} are: {', '.join(result)}"
+        return f"The machines with {intent.replace('_', ' ')} are: {', '.join(result)}" # Corrected line
 
     if intent in ["cartons_produced", "cartons_sold"]:
         field = "cartons_produced" if intent == "cartons_produced" else "cartons_sold"
@@ -158,7 +162,9 @@ def cleanup_audio_files():
 
 atexit.register(cleanup_audio_files)
 
-# NEW: Root route for basic accessibility
+# External API Configuration
+EXTERNAL_API_BASE_URL = "https://smart-factory-five.vercel.app"
+
 @app.route("/", methods=["GET"])
 def index():
     return "Smart Factory Voice Assistant API is running! Use /transcribe or /process_command endpoints."
@@ -166,6 +172,27 @@ def index():
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "healthy"})
+
+# NEW ROUTE: Fetch all data from the external MERN API (NO TOKEN REQUIRED)
+@app.route("/data/fetch_all_external", methods=["GET"])
+def fetch_all_external_data():
+    external_api_url = f"{EXTERNAL_API_BASE_URL}/data/all"
+
+    try:
+        logger.info(f"Attempting to fetch data from external API: {external_api_url}")
+        response = requests.get(external_api_url) # Removed headers
+        response.raise_for_status() # Raise an exception for HTTP errors (4xx or 5xx)
+        
+        data = response.json()
+        logger.info("Successfully fetched data from external API.")
+        return jsonify(data)
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error fetching data from external API: {e}")
+        return jsonify({"error": f"Failed to fetch data from external API: {e}"}), 500
+    except ValueError as e:
+        logger.error(f"Error parsing JSON from external API: {e}")
+        return jsonify({"error": f"Failed to parse response from external API: {e}"}), 500
+
 
 @app.route("/transcribe", methods=["POST"])
 def transcribe():
