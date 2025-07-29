@@ -2,14 +2,12 @@ import logging
 from flask import Flask, request, send_file, jsonify
 from flask_cors import CORS
 from faster_whisper import WhisperModel
-# spacy and spacy.cli are removed
-from pymongo import MongoClient # Still imported, but less used for sensor data
+from pymongo import MongoClient
 from gtts import gTTS
 import os
 import glob
 import atexit
 import time
-# spacy.matcher is removed
 from datetime import datetime, timedelta
 import requests
 import json 
@@ -33,10 +31,8 @@ try:
     logger.info(f"Configuration loaded from {CONFIG_FILE}")
 except FileNotFoundError:
     logger.error(f"Configuration file {CONFIG_FILE} not found. Using default empty config.")
-    # You might want to raise an exception or use sensible defaults here
 except json.JSONDecodeError as e:
     logger.error(f"Error decoding JSON from {CONFIG_FILE}: {e}")
-    # You might want to raise an exception here
 # --- End Configuration Load ---
 
 # Lazy-load Whisper model using faster-whisper
@@ -52,96 +48,116 @@ try:
     MONGODB_URI = os.environ.get("MONGODB_URI", "mongodb+srv://factory:1234@cluster0.t2zyjyl.mongodb.net/SmartFactory")
     client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
     db = client["SmartFactory"] 
-    analytics = db["analytics"] # Keep if you still need analytics data
-    # Test connection
+    analytics = db["analytics"]
     client.server_info()
     logger.info("MongoDB connection successful.")
 except Exception as e:
     logger.error("MongoDB connection failed: %s", e)
-    # For this test, we'll allow the app to run even if MongoDB fails,
-    # as sensor data comes from the external API.
-    # raise # Uncomment if MongoDB connection is critical for other parts
 
-# External API Configuration
-EXTERNAL_API_BASE_URL = "https://model-deployed-production.up.railway.app"
+# External MERN API Configuration
+EXTERNAL_API_BASE_URL = "https://smart-factory-five.vercel.app" # Updated to the MERN API URL
 
 # Gemini API Configuration
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 
-# Helper function to fetch data from the external API
+# Helper function to fetch data from the external API (GET /data/all)
+# This function NO LONGER ACCEPTS a user_auth_token and does not send an Authorization header.
+# This assumes the /data/all endpoint on the MERN API is publicly accessible.
 def _fetch_all_external_data_internal():
     external_api_url = f"{EXTERNAL_API_BASE_URL}/data/all"
+    
     try:
-        logger.info(f"Fetching data from external API: {external_api_url}")
-        response = requests.get(external_api_url)
-        response.raise_for_status() # Raise an exception for HTTP errors (4xx or 5xx)
+        logger.info(f"Fetching data from external API: {external_api_url} (no auth required for this endpoint)")
+        response = requests.get(external_api_url) 
+        response.raise_for_status() 
         data = response.json()
         logger.info("Successfully fetched data from external API.")
         return data
+    except requests.exceptions.HTTPError as e:
+        logger.error(f"HTTP error fetching data from external API: {e.response.status_code} - {e.response.text}")
+        # Note: No 401/403 specific handling here, as it's assumed to be public.
+        return {"error": f"Failed to retrieve data: {e.response.text}"}
     except requests.exceptions.RequestException as e:
-        logger.error(f"Error fetching data from external API: {e}")
-        return None # Return None on failure
+        logger.error(f"Network error fetching data from external API: {e}")
+        return {"error": "Network error retrieving data from factory system."}
     except ValueError as e:
         logger.error(f"Error parsing JSON from external API: {e}")
-        return None # Return None on failure
+        return {"error": "Error parsing data from factory system."}
 
-# --- NEW parse_command using Gemini LLM ---
+# --- parse_command using Gemini LLM (Expanded for Actions and parameters) ---
 def parse_command(text):
     if not GEMINI_API_KEY:
         logger.error("GEMINI_API_KEY environment variable not set.")
-        return None, None, None # Cannot process without API key
+        return None, None, None, None, None, None, None
 
     # Get entities from config for the prompt
     machine_names = config_data.get("entities", {}).get("machines", [])
     room_names = config_data.get("entities", {}).get("rooms", [])
     
-    # Define possible intents based on your field_mappings and maintenance_status_map keys
-    # This ensures the LLM returns intents your system can handle
+    # Define all possible intents from config
     possible_intents = list(config_data.get("field_mappings", {}).keys()) + \
-                       list(config_data.get("maintenance_status_map", {}).keys())
+                       list(config_data.get("maintenance_status_map", {}).keys()) + \
+                       ["toggle_lights", "toggle_machine_power", "record_sale", "record_cartons"] 
     
     prompt = f"""
-    You are a factory voice assistant. Your task is to extract the user's intent and any relevant entity (machine or room) from their command.
-    
-    Here are the possible machine names: {', '.join(machine_names)}
-    Here are the possible room names: {', '.join(room_names)}
-    Here are the possible intents: {', '.join(possible_intents)}
+    You are an advanced AI assistant for a smart factory. Your primary function is to accurately parse natural language commands from users to identify their core intent and any specific factory entity (machine or room) they are referring to, as well as any numerical or specific string parameters required for actions.
 
-    Respond ONLY with a JSON object. Do NOT include any other text.
-    The JSON object should have the following structure:
-    {{
-      "intent": "identified_intent_from_list",
-      "entity_name": "identified_entity_name_from_list",
-      "entity_type": "machine" or "room" or null
-    }}
-    
-    If an intent or entity cannot be identified, use `null` for that field.
-    
-    Examples:
-    User: "What is the temperature of the Furnace?"
-    Response: {{"intent": "temperature", "entity_name": "Furnace", "entity_type": "machine"}}
+    **Constraints & Output Format:**
+    - Your response MUST be a single JSON object. DO NOT include any additional text, explanations, or conversational filler outside the JSON.
+    - The JSON structure MUST contain the keys "intent", "entity_name", "entity_type", "light_num", "cartons_sold", "cartons_produced", and "buyer".
+    - "intent" must be one of the provided 'Available Intents'.
+    - "entity_name" must be one of the provided 'Available Entities' (machine or room name), exactly as listed (case-insensitive matching for identification, but output should be Title Case if found).
+    - "entity_type" must be "machine", "room", or null.
+    - "light_num" must be an integer (1 or 2 for the two lights in a room, or null).
+    - "cartons_sold" must be an integer (number of cartons sold, or null).
+    - "cartons_produced" must be an integer (number of cartons produced, or null).
+    - "buyer" must be a string (name of the buyer, or null).
+    - If a parameter is not relevant to the identified intent, its value MUST be `null`.
+    - If an intent or entity cannot be confidently identified from the provided lists, its value MUST be `null`.
+    - If multiple entities are mentioned, identify the primary one or null if ambiguous.
 
-    User: "Is the Encapsulator operating normally?"
-    Response: {{"intent": "normal_operation", "entity_name": "Encapsulator", "entity_type": "machine"}}
+    **Available Entities:**
+    Machines: {', '.join(machine_names)}
+    Rooms: {', '.join(room_names)}
 
-    User: "Tell me about the noise level in the Machine Room."
-    Response: {{"intent": "noise", "entity_name": "Machine Room", "entity_type": "room"}}
+    **Available Intents:**
+    {', '.join(possible_intents)}
 
-    User: "How many cartons produced?"
-    Response: {{"intent": "cartons_produced", "entity_name": null, "entity_type": null}}
+    ---
 
-    User: "Is anything wrong?"
-    Response: {{"intent": "not_normal", "entity_name": null, "entity_type": null}}
+    **Examples (User Input -> JSON Output):**
 
-    User: "What's the status of lights in Warehouse?"
-    Response: {{"intent": "lights", "entity_name": "Warehouse", "entity_type": "room"}}
+    1. User: "What's the current temperature in the Furnace?"
+       Output: {{"intent": "temperature", "entity_name": "Furnace", "entity_type": "machine", "light_num": null, "cartons_sold": null, "cartons_produced": null, "buyer": null}}
 
-    User: "Hello"
-    Response: {{"intent": null, "entity_name": null, "entity_type": null}}
+    2. User: "Is the Encapsulator having any issues with maintenance?"
+       Output: {{"intent": "maintenance", "entity_name": "Encapsulator", "entity_type": "machine", "light_num": null, "cartons_sold": null, "cartons_produced": null, "buyer": null}}
 
-    User: "{text}"
-    Response: 
+    3. User: "Turn on light number one in the Machine Room."
+       Output: {{"intent": "toggle_lights", "entity_name": "Machine Room", "entity_type": "room", "light_num": 1, "cartons_sold": null, "cartons_produced": null, "buyer": null}}
+
+    4. User: "Switch off the second light in the Warehouse."
+       Output: {{"intent": "toggle_lights", "entity_name": "Warehouse", "entity_type": "room", "light_num": 2, "cartons_sold": null, "cartons_produced": null, "buyer": null}}
+
+    5. User: "Start the Cooler."
+       Output: {{"intent": "toggle_machine_power", "entity_name": "Cooler", "entity_type": "machine", "light_num": null, "cartons_sold": null, "cartons_produced": null, "buyer": null}}
+
+    6. User: "Record a sale of 50 cartons to John Doe."
+       Output: {{"intent": "record_sale", "entity_name": null, "entity_type": null, "light_num": null, "cartons_sold": 50, "cartons_produced": null, "buyer": "John Doe"}}
+
+    7. User: "Log 100 produced cartons."
+       Output: {{"intent": "record_cartons", "entity_name": null, "entity_type": null, "light_num": null, "cartons_sold": null, "cartons_produced": 100, "buyer": null}}
+
+    8. User: "What's up with the Cleaner?"
+       Output: {{"intent": "not_normal", "entity_name": "Cleaner", "entity_type": "machine", "light_num": null, "cartons_sold": null, "cartons_produced": null, "buyer": null}}
+
+    9. User: "Hello, how are you?"
+       Output: {{"intent": null, "entity_name": null, "entity_type": null, "light_num": null, "cartons_sold": null, "cartons_produced": null, "buyer": null}}
+    ---
+
+    **User Command:** "{text}"
+    **Your JSON Output:**
     """
 
     headers = {
@@ -161,9 +177,13 @@ def parse_command(text):
                 "properties": {
                     "intent": {"type": "STRING", "nullable": True},
                     "entity_name": {"type": "STRING", "nullable": True},
-                    "entity_type": {"type": "STRING", "enum": ["machine", "room", "null"], "nullable": True}
+                    "entity_type": {"type": "STRING", "enum": ["machine", "room", "null"], "nullable": True},
+                    "light_num": {"type": "INTEGER", "nullable": True},
+                    "cartons_sold": {"type": "INTEGER", "nullable": True},
+                    "cartons_produced": {"type": "INTEGER", "nullable": True},
+                    "buyer": {"type": "STRING", "nullable": True}
                 },
-                "propertyOrdering": ["intent", "entity_name", "entity_type"]
+                "propertyOrdering": ["intent", "entity_name", "entity_type", "light_num", "cartons_sold", "cartons_produced", "buyer"]
             }
         }
     }
@@ -171,12 +191,10 @@ def parse_command(text):
     try:
         logger.info(f"Sending prompt to Gemini API for text: '{text}'")
         response = requests.post(f"{GEMINI_API_URL}?key={GEMINI_API_KEY}", headers=headers, json=payload)
-        response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+        response.raise_for_status()
         
         gemini_response = response.json()
         
-        # Parse the JSON string from the LLM's text output
-        # The LLM returns a string that needs to be parsed as JSON
         llm_output_text = gemini_response.get("candidates", [])[0].get("content", {}).get("parts", [])[0].get("text", "{}")
         
         parsed_llm_output = json.loads(llm_output_text)
@@ -184,32 +202,39 @@ def parse_command(text):
         intent = parsed_llm_output.get("intent")
         entity_name = parsed_llm_output.get("entity_name")
         entity_type = parsed_llm_output.get("entity_type")
+        light_num = parsed_llm_output.get("light_num")
+        cartons_sold = parsed_llm_output.get("cartons_sold")
+        cartons_produced = parsed_llm_output.get("cartons_produced")
+        buyer = parsed_llm_output.get("buyer")
         
-        # Ensure entity_name is capitalized correctly if extracted by LLM
         if entity_name:
             entity_name = entity_name.title()
 
-        logger.info(f"Gemini parsed: Intent={intent}, Entity Name={entity_name}, Entity Type={entity_type}")
-        return intent, entity_name, entity_type
+        logger.info(f"Gemini parsed: Intent={intent}, Entity Name={entity_name}, Entity Type={entity_type}, Light Num={light_num}, Cartons Sold={cartons_sold}, Cartons Produced={cartons_produced}, Buyer={buyer}")
+        return intent, entity_name, entity_type, light_num, cartons_sold, cartons_produced, buyer
 
     except requests.exceptions.RequestException as e:
         logger.error(f"Error calling Gemini API: {e}")
-        return None, None, None
+        return None, None, None, None, None, None, None
     except (json.JSONDecodeError, IndexError, KeyError) as e:
         logger.error(f"Error parsing Gemini API response or unexpected format: {e}, Response: {response.text}")
-        return None, None, None
-# --- END NEW parse_command ---
-
+        return None, None, None, None, None, None, None
 
 # Field map from config (used by get_sensor_data)
 field_map = config_data.get("field_mappings", {})
 maintenance_status_map = config_data.get("maintenance_status_map", {})
 
 
+# get_sensor_data NO LONGER ACCEPTS user_auth_token, as /data/all is assumed public
 def get_sensor_data(intent, entity_name, entity_type):
-    # Fetch data from the external API first
+    # Fetch data from the external API first (no auth token passed here)
     all_data = _fetch_all_external_data_internal()
-    if not all_data:
+    
+    # Check if _fetch_all_external_data_internal returned an error dictionary
+    if isinstance(all_data, dict) and "error" in all_data:
+        return all_data["error"] # Return the error message directly
+
+    if not all_data: # If it's None (e.g., network error)
         return "I'm sorry, I couldn't retrieve the latest factory data."
 
     rooms_data = all_data.get("rooms", [])
@@ -217,7 +242,7 @@ def get_sensor_data(intent, entity_name, entity_type):
     cartons_num = all_data.get("cartons_num", 0)
 
     # Handle intents related to machine status (normal_operation, not_normal, clogged_filter, bearing_wear)
-    if intent in maintenance_status_map: # Use the configurable map
+    if intent in maintenance_status_map:
         matching_machines = []
         target_maintenance_status = maintenance_status_map[intent]
         
@@ -237,8 +262,6 @@ def get_sensor_data(intent, entity_name, entity_type):
     if intent == "cartons_produced":
         return f"The total number of cartons produced is currently {cartons_num}."
     elif intent == "cartons_sold":
-        # The external API doesn't seem to have a 'cartons_sold' field directly.
-        # You might need to clarify this with your team or use your own analytics DB.
         return "I can tell you the total cartons, but not specifically cartons sold from this data."
         
     # Handle specific sensor data requests (temperature, noise, humidity, smoke, vibration, power_usage, lights)
@@ -255,20 +278,116 @@ def get_sensor_data(intent, entity_name, entity_type):
                 break
 
     if target_entity:
-        field_info = field_map.get(intent) # Get field_name and unit from config
+        field_info = field_map.get(intent)
         if field_info:
             field_name = field_info["field_name"]
             unit = field_info["unit"]
             
             if field_name in target_entity:
                 if intent == "lights" and entity_type == "room":
-                    light_statuses = ["on" if l else "off" for l in target_entity["lights"]]
-                    return f"The lights in the {target_entity['name']} are currently {', '.join(light_statuses)}."
+                    light_statuses = ["off", "on"]
+                    current_light_states = [light_statuses[int(l)] for l in target_entity["lights"]]
+                    return f"The lights in the {target_entity['name']} are currently light one is {current_light_states[0]} and light two is {current_light_states[1]}."
                 else:
                     return f"The {intent.replace('_', ' ')} of the {target_entity['name']} is {target_entity[field_name]} {unit}."
         return f"No {intent.replace('_', ' ')} data found for {target_entity['name']}."
     
     return f"No data found for {entity_name}."
+
+# Function to perform actions via external API POST requests
+# This function still requires and uses user_auth_token
+async def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, cartons_produced, buyer, user_auth_token):
+    if not user_auth_token:
+        logger.warning("No authentication token provided for action request.")
+        return "I'm sorry, I need you to log in first to perform this action."
+
+    headers = {
+        "Authorization": f"Bearer {user_auth_token}",
+        "Content-Type": "application/json"
+    }
+    
+    try:
+        if intent == "toggle_lights":
+            if not entity_name or not entity_type == "room" or light_num is None:
+                return "I need a room name and the light number (1 or 2) to toggle lights."
+            if light_num not in [1, 2]:
+                return "Light number must be 1 or 2."
+            
+            payload = {
+                "room_name": entity_name,
+                "light_num": light_num
+            }
+            api_endpoint = f"{EXTERNAL_API_BASE_URL}/toggle/lights"
+            logger.info(f"Toggling lights: {payload} at {api_endpoint}")
+            response = requests.post(api_endpoint, headers=headers, json=payload)
+            response.raise_for_status()
+            result = response.json()
+            light_statuses = ["off", "on"]
+            current_light_state = light_statuses[int(result['lights'][light_num-1])]
+            return f"Light {light_num} in {result.get('room_name')} is now {current_light_state}."
+
+        elif intent == "toggle_machine_power":
+            if not entity_name or not entity_type == "machine":
+                return "I need a machine name to toggle its power."
+            payload = {
+                "machine_name": entity_name
+            }
+            api_endpoint = f"{EXTERNAL_API_BASE_URL}/toggle/machine"
+            logger.info(f"Toggling machine power: {payload} at {api_endpoint}")
+            response = requests.post(api_endpoint, headers=headers, json=payload)
+            response.raise_for_status()
+            result = response.json()
+            power_status = "on" if result.get('power') else "off"
+            return f"The {result.get('machine_name')} is now {power_status}."
+
+        elif intent == "record_sale":
+            if cartons_sold is None or not isinstance(cartons_sold, int) or cartons_sold <= 0:
+                return "Please specify a valid number of cartons sold."
+            
+            payload = {
+                "cartons_sold": cartons_sold,
+                "DateTime": datetime.now().isoformat(),
+                "Buyer": buyer if buyer else "Unknown"
+            }
+            api_endpoint = f"{EXTERNAL_API_BASE_URL}/tx/sale"
+            logger.info(f"Recording sale: {payload} at {api_endpoint}")
+            response = requests.post(api_endpoint, headers=headers, json=payload)
+            response.raise_for_status()
+            result = response.json()
+            return f"Recorded sale of {result.get('cartons_sold')} cartons to {result.get('Buyer')}."
+
+        elif intent == "record_cartons":
+            if cartons_produced is None or not isinstance(cartons_produced, int) or cartons_produced <= 0:
+                return "Please specify a valid number of cartons produced."
+            payload = {
+                "cartons_produced": cartons_produced,
+                "DateTime": datetime.now().isoformat()
+            }
+            api_endpoint = f"{EXTERNAL_API_BASE_URL}/tx/cartons"
+            logger.info(f"Recording cartons produced: {payload} at {api_endpoint}")
+            response = requests.post(api_endpoint, headers=headers, json=payload)
+            response.raise_for_status()
+            result = response.json()
+            return f"Recorded production of {result.get('addition', {}).get('cartons_produced')} cartons. Total cartons now {result.get('cartons_num')}."
+
+        else:
+            return "I'm sorry, I don't know how to perform that specific action yet."
+
+    except requests.exceptions.HTTPError as e:
+        logger.error(f"HTTP error performing action for {intent}: {e.response.status_code} - {e.response.text}")
+        if e.response.status_code == 401 or e.response.status_code == 403:
+            return "Authentication failed. Please ensure you are logged in."
+        elif e.response.status_code == 400:
+            return f"Bad request: {e.response.json().get('error', e.response.text)}"
+        elif e.response.status_code == 404:
+            return f"Entity not found: {e.response.json().get('error', e.response.text)}"
+        return f"Failed to perform action due to a server error: {e.response.text}"
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Network error performing action for {intent}: {e}")
+        return "I'm sorry, I'm having trouble connecting to the factory system."
+    except Exception as e:
+        logger.error(f"Unexpected error performing action for {intent}: {e}")
+        return "An unexpected error occurred while trying to perform that action."
 
 
 def text_to_speech(text):
@@ -298,17 +417,6 @@ def index():
 def health():
     return jsonify({"status": "healthy"})
 
-# Route to directly fetch all data from the external MERN API
-# This route is for external clients to call if they need the raw data.
-# The internal helper function `_fetch_all_external_data_internal` is used by `get_sensor_data`.
-@app.route("/data/fetch_all_external", methods=["GET"])
-def fetch_all_external_data():
-    data = _fetch_all_external_data_internal()
-    if data:
-        return jsonify(data)
-    return jsonify({"error": "Failed to fetch data from external API."}), 500
-
-
 @app.route("/transcribe", methods=["POST"])
 def transcribe():
     if "audio" not in request.files:
@@ -329,17 +437,36 @@ def transcribe():
             os.remove(path)
 
 @app.route("/process_command", methods=["POST"])
-def process_command():
+async def process_command():
     text = request.get_json().get("text", "")
+    # Extract token from the request headers sent by the frontend
+    # This token is now the user's JWT from the MERN API
+    user_auth_token = request.headers.get('Authorization', '').replace('Bearer ', '')
+
     logger.info(f"Processing command: {text}")
-    intent, entity_name, entity_type = parse_command(text) # This calls the LLM
+    logger.info(f"Received user_auth_token: {'Present' if user_auth_token else 'Absent'}")
+    
+    # Parse command using LLM, returns all extracted parameters
+    intent, entity_name, entity_type, light_num, cartons_sold, cartons_produced, buyer = parse_command(text) 
+    
+    response_text = "I'm sorry, I couldn't understand your command or extract enough information."
+
     if intent:
-        response = get_sensor_data(intent, entity_name, entity_type)
-        logger.info(f"Generated response: {response}")
-        audio_file = text_to_speech(response)
+        action_intents = ["toggle_lights", "toggle_machine_power", "record_sale", "record_cartons"]
+        
+        if intent in action_intents:
+            # Pass the user_auth_token to the perform_action function
+            response_text = await perform_action(intent, entity_name, entity_type, light_num, cartons_sold, cartons_produced, buyer, user_auth_token)
+        else:
+            # DO NOT pass the user_auth_token to the get_sensor_data function
+            # as /data/all is assumed to be public.
+            response_text = get_sensor_data(intent, entity_name, entity_type)
+        
+        logger.info(f"Generated response: {response_text}")
+        audio_file = text_to_speech(response_text)
         audio_name = os.path.basename(audio_file) if audio_file else None 
         return jsonify({
-            "response": response,
+            "response": response_text,
             "audio_filename": audio_name,
             "audio_url": f"/audio/{audio_name}" if audio_name else None
         })
