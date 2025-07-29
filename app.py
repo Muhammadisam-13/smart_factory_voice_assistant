@@ -63,7 +63,7 @@ except Exception as e:
     # raise # Uncomment if MongoDB connection is critical for other parts
 
 # External API Configuration
-EXTERNAL_API_BASE_URL = "https://model-deployed-production.up.railway.app"
+EXTERNAL_API_BASE_URL = "smartfactoryvoiceassistant-production.up.railway.app"
 
 # Gemini API Configuration
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
