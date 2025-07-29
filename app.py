@@ -61,7 +61,7 @@ except Exception as e:
 
 # External MERN API Configuration
 # IMPORTANT: Use an environment variable here too for local vs. deployed MERN backend
-EXTERNAL_API_BASE_URL = os.environ.get("MERN_API_BASE_URL", "https://smart-factory-five.vercel.app")
+EXTERNAL_API_BASE_URL = "https://model-deployed-production.up.railway.app"
 logger.info(f"Using MERN API Base URL: {EXTERNAL_API_BASE_URL}")
 
 # Gemini API Configuration
