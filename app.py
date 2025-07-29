@@ -296,7 +296,7 @@ def get_sensor_data(intent, entity_name, entity_type):
 
 # Function to perform actions via external API POST requests
 # This function still requires and uses user_auth_token
-async def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, cartons_produced, buyer, user_auth_token):
+def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, cartons_produced, buyer, user_auth_token):
     if not user_auth_token:
         logger.warning("No authentication token provided for action request.")
         return "I'm sorry, I need you to log in first to perform this action."
