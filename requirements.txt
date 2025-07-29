@@ -5,3 +5,4 @@ gtts==2.5.3
 gunicorn==22.0.0
 flask-cors==4.0.0
 requests==2.32.3
+uvicorn==0.30.1
