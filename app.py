@@ -2,17 +2,17 @@ import logging
 from flask import Flask, request, send_file, jsonify
 from flask_cors import CORS
 from faster_whisper import WhisperModel
-import spacy
-import spacy.cli
+# spacy and spacy.cli are removed
 from pymongo import MongoClient # Still imported, but less used for sensor data
 from gtts import gTTS
 import os
 import glob
 import atexit
 import time
-from spacy.matcher import Matcher
+# spacy.matcher is removed
 from datetime import datetime, timedelta
 import requests
+import json 
 
 # Setup logging
 logging.basicConfig(level=logging.DEBUG)
@@ -24,6 +24,21 @@ CORS(app)
 # Ensure static directory exists
 os.makedirs("static", exist_ok=True)
 
+# --- Load Configuration from config.json ---
+CONFIG_FILE = 'config.json'
+config_data = {}
+try:
+    with open(CONFIG_FILE, 'r') as f:
+        config_data = json.load(f)
+    logger.info(f"Configuration loaded from {CONFIG_FILE}")
+except FileNotFoundError:
+    logger.error(f"Configuration file {CONFIG_FILE} not found. Using default empty config.")
+    # You might want to raise an exception or use sensible defaults here
+except json.JSONDecodeError as e:
+    logger.error(f"Error decoding JSON from {CONFIG_FILE}: {e}")
+    # You might want to raise an exception here
+# --- End Configuration Load ---
+
 # Lazy-load Whisper model using faster-whisper
 def get_whisper_model():
     if not hasattr(get_whisper_model, "model"):
@@ -32,88 +47,27 @@ def get_whisper_model():
         logger.info("Faster-whisper model loaded.")
     return get_whisper_model.model
 
-# Ensure spaCy model is downloaded
+# MongoDB setup (kept for analytics if still needed, but sensor data will come from external API)
 try:
-    spacy.load("en_core_web_sm")
-    logger.info("spaCy 'en_core_web_sm' model already loaded.")
-except OSError:
-    logger.warning("spaCy 'en_core_web_sm' model not found, downloading...")
-    spacy.cli.download("en_core_web_sm")
-    logger.info("spaCy 'en_core_web_sm' model downloaded.")
-nlp = spacy.load("en_core_web_sm")
-
-# # MongoDB setup (kept for analytics if still needed, but sensor data will come from external API)
-# try:
-#     MONGODB_URI = os.environ.get("MONGODB_URI", "mongodb+srv://factory:1234@cluster0.t2zyjyl.mongodb.net/SmartFactory")
-#     client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
-#     db = client["SmartFactory"] 
-#     # sensors = db["sensors"] # No longer directly used for sensor data
-#     analytics = db["analytics"] # Keep if you still need analytics data
-#     # Test connection
-#     client.server_info()
-#     logger.info("MongoDB connection successful.")
-# except Exception as e:
-#     logger.error("MongoDB connection failed: %s", e)
-#     # Don't raise if analytics is optional, but for core functionality, keep it.
-#     # For now, we'll let it pass if only analytics is affected and sensor data comes from external API.
-#     # raise # Uncomment if MongoDB connection is critical for other parts
-
-# Setup Matcher
-matcher = Matcher(nlp.vocab)
-machine_names = [
-    "Encapsulator", "Labeller", "Cleaner", "Cooler",
-    "Cylinder Creator", "Furnace", "Packager", "Bottle Shaper"
-]
-room_names = ["Machine Room", "Security Room", "Warehouse"]
-
-for name in machine_names:
-    matcher.add("MACHINE", [[{"LOWER": w.lower()} for w in name.split()]])
-for name in room_names:
-    matcher.add("ROOM", [[{"LOWER": w.lower()} for w in name.split()]])
-
-intent_patterns = {
-    "temperature": [{"LOWER": "temperature"}],
-    "noise": [{"LOWER": {"IN": ["noise", "noise_level"]}}],
-    "maintenance": [{"LOWER": "maintenance"}],
-    "vibration": [{"LOWER": "vibration"}],
-    "power_usage": [{"LOWER": {"IN": ["power", "power_usage"]}}],
-    "humidity": [{"LOWER": "humidity"}],
-    "smoke": [{"LOWER": "smoke"}],
-    "normal_operation": [{"LOWER": {"IN": ["on", "operating", "are"]}}, {"LOWER": {"IN": ["normal", "normally"]}}, {"LOWER": "operation"}],
-    "not_normal": [{"LOWER": "not"}, {"LOWER": {"IN": ["normal", "normally", "operation", "operating"]}}, {"LOWER": "operation", "OP": "?"}],
-    "clogged_filter": [{"LOWER": {"IN": ["clogged", "clog"]}}, {"LOWER": {"IN": ["filter", "filtr"]}}],
-    "bearing_wear": [{"LOWER": "bearing"}, {"LOWER": "wear"}],
-    "cartons_produced": [{"LOWER": {"IN": ["cartons", "carton"]}}, {"LOWER": "produced"}],
-    "cartons_sold": [{"LOWER": {"IN": ["cartons", "carton"]}}, {"LOWER": "sold"}]
-}
-for key, pattern in intent_patterns.items():
-    matcher.add(key.upper(), [pattern])
-
-def parse_command(text):
-    doc = nlp(text.lower())
-    intent, entity_name, entity_type = None, None, None
-    matches = matcher(doc)
-    for match_id, start, end in matches:
-        label = nlp.vocab.strings[match_id]
-        if label in ["MACHINE", "ROOM"]:
-            entity_name = doc[start:end].text.title()
-            entity_type = "machine" if label == "MACHINE" else "room"
-        elif label.lower() in intent_patterns:
-            intent = label.lower()
-    return intent, entity_name, entity_type
-
-field_map = {
-    "temperature": ("temperature", "degrees Celsius"),
-    "noise": ("noise_level", "decibels"),
-    "maintenance": ("maintenance", ""),
-    "vibration": ("vibration", "hertz"),
-    "power_usage": ("power_usage", "kilowatts"),
-    "humidity": ("humidity", "percent"),
-    "smoke": ("smoke", "parts per million")
-}
+    MONGODB_URI = os.environ.get("MONGODB_URI", "mongodb+srv://factory:1234@cluster0.t2zyjyl.mongodb.net/SmartFactory")
+    client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
+    db = client["SmartFactory"] 
+    analytics = db["analytics"] # Keep if you still need analytics data
+    # Test connection
+    client.server_info()
+    logger.info("MongoDB connection successful.")
+except Exception as e:
+    logger.error("MongoDB connection failed: %s", e)
+    # For this test, we'll allow the app to run even if MongoDB fails,
+    # as sensor data comes from the external API.
+    # raise # Uncomment if MongoDB connection is critical for other parts
 
 # External API Configuration
 EXTERNAL_API_BASE_URL = "https://model-deployed-production.up.railway.app"
+
+# Gemini API Configuration
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 
 # Helper function to fetch data from the external API
 def _fetch_all_external_data_internal():
@@ -132,6 +86,126 @@ def _fetch_all_external_data_internal():
         logger.error(f"Error parsing JSON from external API: {e}")
         return None # Return None on failure
 
+# --- NEW parse_command using Gemini LLM ---
+def parse_command(text):
+    if not GEMINI_API_KEY:
+        logger.error("GEMINI_API_KEY environment variable not set.")
+        return None, None, None # Cannot process without API key
+
+    # Get entities from config for the prompt
+    machine_names = config_data.get("entities", {}).get("machines", [])
+    room_names = config_data.get("entities", {}).get("rooms", [])
+    
+    # Define possible intents based on your field_mappings and maintenance_status_map keys
+    # This ensures the LLM returns intents your system can handle
+    possible_intents = list(config_data.get("field_mappings", {}).keys()) + \
+                       list(config_data.get("maintenance_status_map", {}).keys())
+    
+    prompt = f"""
+    You are a factory voice assistant. Your task is to extract the user's intent and any relevant entity (machine or room) from their command.
+    
+    Here are the possible machine names: {', '.join(machine_names)}
+    Here are the possible room names: {', '.join(room_names)}
+    Here are the possible intents: {', '.join(possible_intents)}
+
+    Respond ONLY with a JSON object. Do NOT include any other text.
+    The JSON object should have the following structure:
+    {{
+      "intent": "identified_intent_from_list",
+      "entity_name": "identified_entity_name_from_list",
+      "entity_type": "machine" or "room" or null
+    }}
+    
+    If an intent or entity cannot be identified, use `null` for that field.
+    
+    Examples:
+    User: "What is the temperature of the Furnace?"
+    Response: {{"intent": "temperature", "entity_name": "Furnace", "entity_type": "machine"}}
+
+    User: "Is the Encapsulator operating normally?"
+    Response: {{"intent": "normal_operation", "entity_name": "Encapsulator", "entity_type": "machine"}}
+
+    User: "Tell me about the noise level in the Machine Room."
+    Response: {{"intent": "noise", "entity_name": "Machine Room", "entity_type": "room"}}
+
+    User: "How many cartons produced?"
+    Response: {{"intent": "cartons_produced", "entity_name": null, "entity_type": null}}
+
+    User: "Is anything wrong?"
+    Response: {{"intent": "not_normal", "entity_name": null, "entity_type": null}}
+
+    User: "What's the status of lights in Warehouse?"
+    Response: {{"intent": "lights", "entity_name": "Warehouse", "entity_type": "room"}}
+
+    User: "Hello"
+    Response: {{"intent": null, "entity_name": null, "entity_type": null}}
+
+    User: "{text}"
+    Response: 
+    """
+
+    headers = {
+        'Content-Type': 'application/json'
+    }
+    payload = {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [{"text": prompt}]
+            }
+        ],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "responseSchema": {
+                "type": "OBJECT",
+                "properties": {
+                    "intent": {"type": "STRING", "nullable": True},
+                    "entity_name": {"type": "STRING", "nullable": True},
+                    "entity_type": {"type": "STRING", "enum": ["machine", "room", "null"], "nullable": True}
+                },
+                "propertyOrdering": ["intent", "entity_name", "entity_type"]
+            }
+        }
+    }
+
+    try:
+        logger.info(f"Sending prompt to Gemini API for text: '{text}'")
+        response = requests.post(f"{GEMINI_API_URL}?key={GEMINI_API_KEY}", headers=headers, json=payload)
+        response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+        
+        gemini_response = response.json()
+        
+        # Parse the JSON string from the LLM's text output
+        # The LLM returns a string that needs to be parsed as JSON
+        llm_output_text = gemini_response.get("candidates", [])[0].get("content", {}).get("parts", [])[0].get("text", "{}")
+        
+        parsed_llm_output = json.loads(llm_output_text)
+
+        intent = parsed_llm_output.get("intent")
+        entity_name = parsed_llm_output.get("entity_name")
+        entity_type = parsed_llm_output.get("entity_type")
+        
+        # Ensure entity_name is capitalized correctly if extracted by LLM
+        if entity_name:
+            entity_name = entity_name.title()
+
+        logger.info(f"Gemini parsed: Intent={intent}, Entity Name={entity_name}, Entity Type={entity_type}")
+        return intent, entity_name, entity_type
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error calling Gemini API: {e}")
+        return None, None, None
+    except (json.JSONDecodeError, IndexError, KeyError) as e:
+        logger.error(f"Error parsing Gemini API response or unexpected format: {e}, Response: {response.text}")
+        return None, None, None
+# --- END NEW parse_command ---
+
+
+# Field map from config (used by get_sensor_data)
+field_map = config_data.get("field_mappings", {})
+maintenance_status_map = config_data.get("maintenance_status_map", {})
+
+
 def get_sensor_data(intent, entity_name, entity_type):
     # Fetch data from the external API first
     all_data = _fetch_all_external_data_internal()
@@ -143,17 +217,16 @@ def get_sensor_data(intent, entity_name, entity_type):
     cartons_num = all_data.get("cartons_num", 0)
 
     # Handle intents related to machine status (normal_operation, not_normal, clogged_filter, bearing_wear)
-    if intent in ["normal_operation", "not_normal", "clogged_filter", "bearing_wear"]:
+    if intent in maintenance_status_map: # Use the configurable map
         matching_machines = []
+        target_maintenance_status = maintenance_status_map[intent]
+        
         for machine in machines_data:
             if "maintenance" in machine:
-                if intent == "normal_operation" and machine["maintenance"] == "Normal Operation":
-                    matching_machines.append(machine["name"])
-                elif intent == "not_normal" and machine["maintenance"] != "Normal Operation":
-                    matching_machines.append(machine["name"])
-                elif intent == "clogged_filter" and machine["maintenance"] == "Clogged Filter":
-                    matching_machines.append(machine["name"])
-                elif intent == "bearing_wear" and machine["maintenance"] == "Bearing Wear":
+                if isinstance(target_maintenance_status, dict) and "$ne" in target_maintenance_status:
+                    if machine["maintenance"] != target_maintenance_status["$ne"]:
+                        matching_machines.append(machine["name"])
+                elif machine["maintenance"] == target_maintenance_status:
                     matching_machines.append(machine["name"])
         
         if not matching_machines:
@@ -161,20 +234,14 @@ def get_sensor_data(intent, entity_name, entity_type):
         return f"The machines with {intent.replace('_', ' ')} are: {', '.join(matching_machines)}."
 
     # Handle intents related to cartons produced/sold (using data from external API)
-    if intent in ["cartons_produced", "cartons_sold"]:
-        # The external API provides 'cartons_num' directly, not a time-series for produced/sold.
-        # Assuming 'cartons_num' represents a total or current count.
-        # If 'cartons_produced' and 'cartons_sold' need historical data,
-        # you'd need that from the external API or your MongoDB analytics.
-        if intent == "cartons_produced":
-            return f"The total number of cartons produced is currently {cartons_num}."
-        elif intent == "cartons_sold":
-            # The external API doesn't seem to have a 'cartons_sold' field directly.
-            # You might need to clarify this with your team or use your own analytics DB.
-            return "I can tell you the total cartons, but not specifically cartons sold from this data."
+    if intent == "cartons_produced":
+        return f"The total number of cartons produced is currently {cartons_num}."
+    elif intent == "cartons_sold":
+        # The external API doesn't seem to have a 'cartons_sold' field directly.
+        # You might need to clarify this with your team or use your own analytics DB.
+        return "I can tell you the total cartons, but not specifically cartons sold from this data."
         
-    # Handle specific sensor data requests (temperature, noise, humidity, smoke, vibration, power_usage)
-    # Search in machines_data first, then rooms_data
+    # Handle specific sensor data requests (temperature, noise, humidity, smoke, vibration, power_usage, lights)
     target_entity = None
     if entity_type == "machine":
         for machine in machines_data:
@@ -188,13 +255,17 @@ def get_sensor_data(intent, entity_name, entity_type):
                 break
 
     if target_entity:
-        field, unit = field_map.get(intent, (intent, ""))
-        if field in target_entity:
-            return f"The {intent.replace('_', ' ')} of the {target_entity['name']} is {target_entity[field]} {unit}."
-        elif intent == "lights" and "lights" in target_entity and entity_type == "room":
-             # Special handling for lights in rooms
-            light_statuses = ["on" if l else "off" for l in target_entity["lights"]]
-            return f"The lights in the {target_entity['name']} are currently {', '.join(light_statuses)}."
+        field_info = field_map.get(intent) # Get field_name and unit from config
+        if field_info:
+            field_name = field_info["field_name"]
+            unit = field_info["unit"]
+            
+            if field_name in target_entity:
+                if intent == "lights" and entity_type == "room":
+                    light_statuses = ["on" if l else "off" for l in target_entity["lights"]]
+                    return f"The lights in the {target_entity['name']} are currently {', '.join(light_statuses)}."
+                else:
+                    return f"The {intent.replace('_', ' ')} of the {target_entity['name']} is {target_entity[field_name]} {unit}."
         return f"No {intent.replace('_', ' ')} data found for {target_entity['name']}."
     
     return f"No data found for {entity_name}."
@@ -261,12 +332,12 @@ def transcribe():
 def process_command():
     text = request.get_json().get("text", "")
     logger.info(f"Processing command: {text}")
-    intent, entity_name, entity_type = parse_command(text)
+    intent, entity_name, entity_type = parse_command(text) # This calls the LLM
     if intent:
         response = get_sensor_data(intent, entity_name, entity_type)
         logger.info(f"Generated response: {response}")
         audio_file = text_to_speech(response)
-        audio_name = os.path.basename(audio_file) if audio_file else None
+        audio_name = os.path.basename(audio_file) if audio_file else None 
         return jsonify({
             "response": response,
             "audio_filename": audio_name,
