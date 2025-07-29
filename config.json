@@ -1,0 +1,28 @@
+{
+  "entities": {
+    "machines": [
+      "Encapsulator", "Labeller", "Cleaner", "Cooler",
+      "Cylinder Creator", "Furnace", "Packager", "Bottle Shaper"
+    ],
+    "rooms": [
+      "Machine Room", "Security Room", "Warehouse"
+    ]
+  },
+  "field_mappings": {
+    "temperature": {"field_name": "temperature", "unit": "degrees Celsius"},
+    "noise": {"field_name": "noise_level", "unit": "decibels"},
+    "maintenance": {"field_name": "maintenance", "unit": ""},
+    "vibration": {"field_name": "vibration", "unit": "hertz"},
+    "power_usage": {"field_name": "power_usage", "unit": "kilowatts"},
+    "humidity": {"field_name": "humidity", "unit": "percent"},
+    "smoke": {"field_name": "smoke", "unit": "parts per million"},
+    "lights": {"field_name": "lights", "unit": ""}
+  },
+  "maintenance_status_map": {
+    "normal_operation": "Normal Operation",
+    "not_normal": {"$ne": "Normal Operation"},
+    "clogged_filter": "Clogged Filter",
+    "bearing_wear": "Bearing Wear"
+  }
+}
+
