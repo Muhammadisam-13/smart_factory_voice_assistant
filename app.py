@@ -296,7 +296,7 @@ def get_sensor_data(intent, entity_name, entity_type):
 
 # Function to perform actions via external API POST requests
 # This function still requires and uses user_auth_token
-async def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, cartons_produced, buyer, user_auth_token):
+def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, cartons_produced, buyer, user_auth_token):
     if not user_auth_token:
         logger.warning("No authentication token provided for action request.")
         return "I'm sorry, I need you to log in first to perform this action."
@@ -437,7 +437,7 @@ def transcribe():
             os.remove(path)
 
 @app.route("/process_command", methods=["POST"])
-async def process_command():
+def process_command():
     text = request.get_json().get("text", "")
     # Extract token from the request headers sent by the frontend
     # This token is now the user's JWT from the MERN API
@@ -485,3 +485,4 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     logger.info(f"Starting Flask app on port {port}")
     app.run(host="0.0.0.0", port=port)
+asgi_app = WsgiToAsgi(app)
