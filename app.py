@@ -437,7 +437,7 @@ def transcribe():
             os.remove(path)
 
 @app.route("/process_command", methods=["POST"])
-async def process_command():
+def process_command():
     text = request.get_json().get("text", "")
     # Extract token from the request headers sent by the frontend
     # This token is now the user's JWT from the MERN API
