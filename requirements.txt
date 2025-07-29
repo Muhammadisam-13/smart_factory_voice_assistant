@@ -1,4 +1,3 @@
-# requirements.txt
 Flask==3.0.3
 faster-whisper==1.1.1
 pymongo==4.8.0
@@ -7,4 +6,5 @@ gunicorn==22.0.0
 flask-cors==4.0.0
 requests==2.32.3
 uvicorn==0.30.1
-asgiref==3.8.1 # Added for WSGI to ASGI compatibility
+asgiref==3.8.1 # Ensure this version or newer is listed
+python-dotenv # Add this as you're using load_dotenv()
