@@ -262,10 +262,25 @@ def get_sensor_data(intent, entity_name, entity_type):
 
     # Handle intents related to machine status (normal_operation, not_normal, clogged_filter, bearing_wear, alerts)
     if intent in maintenance_status_map or intent == "alerts": # Added "alerts" intent
-        matching_machines = []
-        target_maintenance_status = maintenance_status_map.get(intent, None) # Use .get for alerts
+        # If a specific entity is requested, get its actual maintenance status
+        if entity_name and entity_type == "machine":
+            target_machine = None
+            for machine in machines_data:
+                if machine["name"].lower() == entity_name.lower():
+                    target_machine = machine
+                    break
+            
+            if target_machine and "maintenance" in target_machine:
+                actual_maintenance_status = target_machine["maintenance"]
+                display_name = MAINTENANCE_DISPLAY_NAMES.get(actual_maintenance_status, actual_maintenance_status.replace('_', ' '))
+                return f"The {entity_name} is currently {display_name}."
+            else:
+                return f"Could not find maintenance data for {entity_name}."
 
-        # If intent is "alerts", we want to find machines that are *not* "normal_operation"
+        # For general queries (no specific entity_name or entity_type is not machine)
+        matching_machines = []
+        target_maintenance_status = maintenance_status_map.get(intent, None) 
+
         if intent == "alerts":
             for machine in machines_data:
                 if machine.get("maintenance") != "normal_operation":
@@ -274,13 +289,9 @@ def get_sensor_data(intent, entity_name, entity_type):
                 return "There are no machines currently reporting alerts or abnormal status."
             return f"The machines currently reporting alerts or abnormal status are: {', '.join(matching_machines)}."
 
-        # For other specific maintenance intents
+        # For other specific maintenance intents (general query)
         if target_maintenance_status:
             for machine in machines_data:
-                # If entity_name is provided, filter for that specific machine
-                if entity_name and machine["name"].lower() != entity_name.lower():
-                    continue 
-
                 if "maintenance" in machine:
                     if isinstance(target_maintenance_status, dict) and "$ne" in target_maintenance_status:
                         if machine["maintenance"] != target_maintenance_status["$ne"]:
@@ -288,19 +299,11 @@ def get_sensor_data(intent, entity_name, entity_type):
                     elif machine["maintenance"] == target_maintenance_status:
                         matching_machines.append(machine["name"])
             
-            display_name = MAINTENANCE_DISPLAY_NAMES.get(intent, intent.replace('_', ' ')) # Get user-friendly name
+            display_name = MAINTENANCE_DISPLAY_NAMES.get(intent, intent.replace('_', ' ')) 
 
             if not matching_machines:
-                if entity_name:
-                    # Specific machine was asked, but it's not in this status
-                    return f"The {entity_name} is not currently {display_name}."
-                # General query, but no machines found in this status
                 return f"No machines found that are currently {display_name}."
             
-            if entity_name and matching_machines: # If specific entity was asked and found
-                return f"The {entity_name} is currently {display_name}."
-            
-            # General query, and machines found
             return f"The machines currently {display_name} are: {', '.join(matching_machines)}."
 
 
@@ -333,7 +336,7 @@ def get_sensor_data(intent, entity_name, entity_type):
                 if intent == "lights" and entity_type == "room":
                     light_statuses = ["off", "on"]
                     # Read boolean directly from MERN, then convert for display
-                    current_light_state_bool = target_entity["lights"][light_num-1]
+                    # current_light_state_bool = target_entity["lights"][light_num-1] # This line was causing issues if light_num was None
                     current_light_states = [light_statuses[int(l)] for l in target_entity["lights"]]
                     return f"The lights in the {target_entity['name']} are currently light one is {current_light_states[0]} and light two is {current_light_states[1]}."
                 else:
@@ -348,7 +351,6 @@ def get_sensor_data(intent, entity_name, entity_type):
 
 
 # Function to perform actions via external API POST requests
-# REMOVED 'async' from function definition
 def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, cartons_produced, buyer, user_auth_token, desired_power_state):
     if not user_auth_token:
         logger.warning("No authentication token provided for action request.")
@@ -394,10 +396,14 @@ def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, ca
             # Proceed with toggle if no desired state, or if desired state doesn't match current
             payload = {
                 "room_name": entity_name,
-                "light_num": light_num-1
+                "light_num": light_num # Send 1 or 2 as per MERN spec. If MERN expects 0-indexed, it's an issue on MERN side.
+                                        # User's last comment indicates light_num-1 is needed in payload, so applying that.
             }
+            # **Applying user's requested change for light_num in payload:**
+            payload["light_num"] = light_num - 1 # Adjusted to 0-indexed if MERN expects it this way for payload.
+
             api_endpoint = f"{EXTERNAL_API_BASE_URL}/toggle/lights"
-            logger.info(f"Sending toggle request for light {light_num} in {entity_name}: {payload} to {api_endpoint}")
+            logger.info(f"Sending toggle request for light {light_num} (payload index: {payload['light_num']}) in {entity_name}: {payload} to {api_endpoint}")
             response = requests.post(api_endpoint, headers=headers, json=payload)
             response.raise_for_status()
             result = response.json()
