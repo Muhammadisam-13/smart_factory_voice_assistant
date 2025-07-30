@@ -11,15 +11,15 @@ import time
 from datetime import datetime, timedelta
 import requests
 import json
-from dotenv import load_dotenv
-from asgiref.wsgi import WsgiToAsgi
+from dotenv import load_dotenv # Make sure dotenv is installed: pip install python-dotenv
+from asgiref.wsgi import WsgiToAsgi # This is crucial for Uvicorn
 
 # Setup logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 # Load environment variables FIRST
-load_dotenv()
+load_dotenv() # Call this early to ensure environment variables are available
 
 app = Flask(__name__)
 CORS(app)
@@ -44,7 +44,7 @@ except json.JSONDecodeError as e:
 def get_whisper_model():
     if not hasattr(get_whisper_model, "model"):
         logger.info("Loading faster-whisper 'tiny' model with int8 quantization...")
-        get_whisper_model.model = WhisperModel("tiny", device="cpu", compute_type="int8")
+        get_whisper_model.model = WhisperModel("tiny", device="cpu", compute_type="int8") # Consider 'cuda' for GPU if available on deploy
         logger.info("Faster-whisper model loaded.")
     return get_whisper_model.model
 
@@ -100,7 +100,7 @@ def parse_command(text):
     # Define all possible intents from config
     possible_intents = list(config_data.get("field_mappings", {}).keys()) + \
                        list(config_data.get("maintenance_status_map", {}).keys()) + \
-                       ["toggle_lights", "toggle_machine_power", "record_sale", "record_cartons", "greeting"] # Added "greeting" for LLM to identify
+                       ["toggle_lights", "toggle_machine_power", "record_sale", "record_cartons", "greeting", "alerts"] # Added "greeting" and "alerts" for LLM to identify
     
     prompt = f"""
     You are an advanced AI assistant for a smart factory. Your primary function is to accurately parse natural language commands from users to identify their core intent and any specific factory entity (machine or room) they are referring to, as well as any numerical or specific string parameters required for actions.
@@ -144,10 +144,10 @@ def parse_command(text):
        Output: {{"intent": "toggle_lights", "entity_name": "Warehouse", "entity_type": "room", "light_num": 2, "cartons_sold": null, "cartons_produced": null, "buyer": null, "desired_power_state": null}}
 
     5. User: "Start the Cooler."
-       Output: {{"intent": "toggle_machine_power", "entity_name": "Cooler", "entity_type": "machine", "light_num": null, "cartons_sold": null, "cartons_produced": null, "buyer": "null", "desired_power_state": "on"}}
+       Output: {{"intent": "toggle_machine_power", "entity_name": "Cooler", "entity_type": "machine", "light_num": null, "cartons_sold": null, "cartons_produced": null, "buyer": null, "desired_power_state": "on"}}
 
     6. User: "Turn off the Packager."
-       Output: {{"intent": "toggle_machine_power", "entity_name": "Packager", "entity_type": "machine", "light_num": null, "cartons_sold": null, "cartons_produced": null, "buyer": "null", "desired_power_state": "off"}}
+       Output: {{"intent": "toggle_machine_power", "entity_name": "Packager", "entity_type": "machine", "light_num": null, "cartons_sold": null, "cartons_produced": null, "buyer": null, "desired_power_state": "off"}}
 
     7. User: "Record a sale of 50 cartons to John Doe."
        Output: {{"intent": "record_sale", "entity_name": null, "entity_type": null, "light_num": null, "cartons_sold": 50, "cartons_produced": null, "buyer": "John Doe", "desired_power_state": null}}
@@ -160,6 +160,9 @@ def parse_command(text):
 
     10. User: "Hello, how are you?"
         Output: {{"intent": "greeting", "entity_name": null, "entity_type": null, "light_num": null, "cartons_sold": null, "cartons_produced": null, "buyer": null, "desired_power_state": null}}
+
+    11. User: "Are there any alerts?"
+        Output: {{"intent": "alerts", "entity_name": null, "entity_type": null, "light_num": null, "cartons_sold": null, "cartons_produced": null, "buyer": null, "desired_power_state": null}}
     ---
 
     **User Command:** "{text}"
@@ -289,12 +292,15 @@ def get_sensor_data(intent, entity_name, entity_type):
 
             if not matching_machines:
                 if entity_name:
+                    # Specific machine was asked, but it's not in this status
                     return f"The {entity_name} is not currently {display_name}."
+                # General query, but no machines found in this status
                 return f"No machines found that are currently {display_name}."
             
             if entity_name and matching_machines: # If specific entity was asked and found
                 return f"The {entity_name} is currently {display_name}."
             
+            # General query, and machines found
             return f"The machines currently {display_name} are: {', '.join(matching_machines)}."
 
 
@@ -340,7 +346,7 @@ def get_sensor_data(intent, entity_name, entity_type):
 
 
 # Function to perform actions via external API POST requests
-# Removed 'async' from function definition
+# REMOVED 'async' from function definition
 def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, cartons_produced, buyer, user_auth_token, desired_power_state):
     if not user_auth_token:
         logger.warning("No authentication token provided for action request.")
@@ -389,12 +395,13 @@ def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, ca
             if not current_machine_data:
                 return f"Could not find data for machine: {entity_name}."
 
-            current_power_status = "on" if current_machine_data.get("power") else "off"
+            # Convert boolean power to "on"/"off" string
+            current_power_status_str = "on" if current_machine_data.get("power") else "off"
             
             # 2. Compare desired state with current state
             if desired_power_state: # If user specified "on" or "off"
-                if desired_power_state == current_power_status:
-                    return f"The {entity_name} is already {current_power_status}."
+                if desired_power_state == current_power_status_str:
+                    return f"The {entity_name} is already {current_power_status_str}."
             
             # Proceed with toggle if no desired state, or if desired state doesn't match current
             payload = {
@@ -523,10 +530,14 @@ def process_command():
 
     # --- Handle Greetings First ---
     if intent == "greeting":
+        # Generate audio for greeting and return
+        greeting_response = "Hello there! How can I assist you with the factory today?"
+        audio_file = text_to_speech(greeting_response)
+        audio_name = os.path.basename(audio_file) if audio_file else None 
         return jsonify({
-            "response": "Hello there! How can I assist you with the factory today?",
-            "audio_filename": os.path.basename(text_to_speech("Hello there! How can I assist you with the factory today?")),
-            "audio_url": f"/audio/{os.path.basename(text_to_speech('Hello there! How can I assist you with the factory today?'))}"
+            "response": greeting_response,
+            "audio_filename": audio_name,
+            "audio_url": f"/audio/{audio_name}" if audio_name else None
         })
 
     if intent:
