@@ -332,6 +332,8 @@ def get_sensor_data(intent, entity_name, entity_type):
             if field_name in target_entity:
                 if intent == "lights" and entity_type == "room":
                     light_statuses = ["off", "on"]
+                    # Read boolean directly from MERN, then convert for display
+                    current_light_state_bool = target_entity["lights"][light_num-1]
                     current_light_states = [light_statuses[int(l)] for l in target_entity["lights"]]
                     return f"The lights in the {target_entity['name']} are currently light one is {current_light_states[0]} and light two is {current_light_states[1]}."
                 else:
@@ -376,12 +378,14 @@ def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, ca
                     break
             
             if not current_room_data or "lights" not in current_room_data or len(current_room_data["lights"]) < light_num:
-                return f"Could not find light {light_num} data for room: {entity_name}."
+                return f"Could not find light {light_num} data for room: {entity_name}. Ensure it exists and has light data."
 
-            # Convert boolean (0/1) light state to "on"/"off" string
-            current_light_status_int = current_room_data["lights"][light_num - 1]
-            current_light_status_str = "on" if current_light_status_int == 1 else "off"
+            # Read boolean directly from MERN response
+            current_light_status_bool = current_room_data["lights"][light_num - 1]
+            current_light_status_str = "on" if current_light_status_bool else "off"
             
+            logger.info(f"Light {light_num} in {entity_name} current state: {current_light_status_str}. Desired state: {desired_power_state}")
+
             # 2. Compare desired state with current state
             if desired_power_state: # If user specified "on" or "off"
                 if desired_power_state == current_light_status_str:
@@ -393,13 +397,20 @@ def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, ca
                 "light_num": light_num
             }
             api_endpoint = f"{EXTERNAL_API_BASE_URL}/toggle/lights"
-            logger.info(f"Toggling lights: {payload} at {api_endpoint}")
+            logger.info(f"Sending toggle request for light {light_num} in {entity_name}: {payload} to {api_endpoint}")
             response = requests.post(api_endpoint, headers=headers, json=payload)
             response.raise_for_status()
             result = response.json()
-            light_statuses = ["off", "on"]
-            current_light_state = light_statuses[int(result['lights'][light_num-1])]
-            return f"Light {light_num} in {result.get('room_name')} is now {current_light_state}."
+            
+            # Report the NEW state based on MERN's response
+            if 'lights' in result and len(result['lights']) >= light_num:
+                new_light_state_bool = result['lights'][light_num - 1]
+                new_light_state_str = "on" if new_light_state_bool else "off"
+                return f"Light {light_num} in {result.get('room_name')} is now {new_light_state_str}."
+            else:
+                logger.error(f"MERN API did not return expected 'lights' array in response for toggle_lights: {result}")
+                return f"Successfully sent toggle command for light {light_num} in {entity_name}, but could not confirm its new state."
+
 
         elif intent == "toggle_machine_power":
             if not entity_name or not entity_type == "machine":
@@ -421,6 +432,8 @@ def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, ca
 
             current_power_status_str = "on" if current_machine_data.get("power") else "off"
             
+            logger.info(f"Machine {entity_name} current power state: {current_power_status_str}. Desired state: {desired_power_state}")
+
             # 2. Compare desired state with current state
             if desired_power_state: # If user specified "on" or "off"
                 if desired_power_state == current_power_status_str:
@@ -431,7 +444,7 @@ def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, ca
                 "machine_name": entity_name
             }
             api_endpoint = f"{EXTERNAL_API_BASE_URL}/toggle/machine"
-            logger.info(f"Toggling machine power: {payload} at {api_endpoint}")
+            logger.info(f"Sending toggle request for machine {entity_name}: {payload} to {api_endpoint}")
             response = requests.post(api_endpoint, headers=headers, json=payload)
             response.raise_for_status()
             result = response.json()
@@ -478,9 +491,19 @@ def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, ca
         if e.response.status_code == 401 or e.response.status_code == 403:
             return "Authentication failed. Please ensure you are logged in."
         elif e.response.status_code == 400:
-            return f"Bad request: {e.response.json().get('error', e.response.text)}"
+            # Attempt to parse as JSON if it's a 400, but fallback to text
+            try:
+                error_json = e.response.json()
+                return f"Bad request: {error_json.get('error', e.response.text)}"
+            except json.JSONDecodeError:
+                return f"Bad request: {e.response.text}"
         elif e.response.status_code == 404:
-            return f"Entity not found: {e.response.json().get('error', e.response.text)}"
+            # Attempt to parse as JSON if it's a 404, but fallback to text
+            try:
+                error_json = e.response.json()
+                return f"Entity not found: {error_json.get('error', e.response.text)}"
+            except json.JSONDecodeError:
+                return f"Entity not found: {e.response.text}"
         return f"Failed to perform action due to a server error: {e.response.text}"
     except (json.JSONDecodeError, IndexError, KeyError) as e:
         logger.error(f"Error parsing MERN API response or unexpected format: {e}")
