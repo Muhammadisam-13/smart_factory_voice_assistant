@@ -11,15 +11,15 @@ import time
 from datetime import datetime, timedelta
 import requests
 import json
-from dotenv import load_dotenv # Make sure dotenv is installed: pip install python-dotenv
-from asgiref.wsgi import WsgiToAsgi # This is crucial for Uvicorn
+from dotenv import load_dotenv
+from asgiref.wsgi import WsgiToAsgi
 
 # Setup logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 # Load environment variables FIRST
-load_dotenv() # Call this early to ensure environment variables are available
+load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
@@ -44,7 +44,7 @@ except json.JSONDecodeError as e:
 def get_whisper_model():
     if not hasattr(get_whisper_model, "model"):
         logger.info("Loading faster-whisper 'tiny' model with int8 quantization...")
-        get_whisper_model.model = WhisperModel("tiny", device="cpu", compute_type="int8") # Consider 'cuda' for GPU if available on deploy
+        get_whisper_model.model = WhisperModel("tiny", device="cpu", compute_type="int8")
         logger.info("Faster-whisper model loaded.")
     return get_whisper_model.model
 
@@ -52,17 +52,15 @@ def get_whisper_model():
 try:
     MONGODB_URI = os.environ.get("MONGODB_URI", "mongodb+srv://factory:1234@cluster0.t2zyjyl.mongodb.net/SmartFactory")
     client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
-    db = client["SmartFactory"]
+    db = client["SmartFactory"] 
     analytics = db["analytics"]
     client.server_info()
     logger.info("MongoDB connection successful.")
 except Exception as e:
     logger.error("MongoDB connection failed: %s", e)
 
-# External MERN API Configuration
-# IMPORTANT: Use an environment variable here too for local vs. deployed MERN backend
-EXTERNAL_API_BASE_URL = "https://model-deployed-production.up.railway.app"
-logger.info(f"Using MERN API Base URL: {EXTERNAL_API_BASE_URL}")
+# External MERN API Configuration - Corrected URL (as per user's latest info)
+EXTERNAL_API_BASE_URL = "https://model-deployed-production.up.railway.app" 
 
 # Gemini API Configuration
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -71,11 +69,11 @@ GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini
 # Helper function to fetch data from the external API (GET /data/all)
 def _fetch_all_external_data_internal():
     external_api_url = f"{EXTERNAL_API_BASE_URL}/data/all"
-
+    
     try:
         logger.info(f"Fetching data from external API: {external_api_url} (no auth required for this endpoint)")
-        response = requests.get(external_api_url)
-        response.raise_for_status()
+        response = requests.get(external_api_url) 
+        response.raise_for_status() 
         data = response.json()
         logger.info("Successfully fetched data from external API.")
         return data
@@ -93,23 +91,23 @@ def _fetch_all_external_data_internal():
 def parse_command(text):
     if not GEMINI_API_KEY:
         logger.error("GEMINI_API_KEY environment variable not set.")
-        return None, None, None, None, None, None, None
+        return None, None, None, None, None, None, None, None # Added one more None for desired_power_state
 
     # Get entities from config for the prompt
     machine_names = config_data.get("entities", {}).get("machines", [])
     room_names = config_data.get("entities", {}).get("rooms", [])
-
+    
     # Define all possible intents from config
     possible_intents = list(config_data.get("field_mappings", {}).keys()) + \
-                        list(config_data.get("maintenance_status_map", {}).keys()) + \
-                        ["toggle_lights", "toggle_machine_power", "record_sale", "record_cartons"]
-
+                       list(config_data.get("maintenance_status_map", {}).keys()) + \
+                       ["toggle_lights", "toggle_machine_power", "record_sale", "record_cartons", "greeting"] # Added "greeting" for LLM to identify
+    
     prompt = f"""
     You are an advanced AI assistant for a smart factory. Your primary function is to accurately parse natural language commands from users to identify their core intent and any specific factory entity (machine or room) they are referring to, as well as any numerical or specific string parameters required for actions.
 
     **Constraints & Output Format:**
     - Your response MUST be a single JSON object. DO NOT include any additional text, explanations, or conversational filler outside the JSON.
-    - The JSON structure MUST contain the keys "intent", "entity_name", "entity_type", "light_num", "cartons_sold", "cartons_produced", and "buyer".
+    - The JSON structure MUST contain the keys "intent", "entity_name", "entity_type", "light_num", "cartons_sold", "cartons_produced", "buyer", and "desired_power_state".
     - "intent" must be one of the provided 'Available Intents'.
     - "entity_name" must be one of the provided 'Available Entities' (machine or room name), exactly as listed (case-insensitive matching for identification, but output should be Title Case if found).
     - "entity_type" must be "machine", "room", or null.
@@ -117,6 +115,7 @@ def parse_command(text):
     - "cartons_sold" must be an integer (number of cartons sold, or null).
     - "cartons_produced" must be an integer (number of cartons produced, or null).
     - "buyer" must be a string (name of the buyer, or null).
+    - "desired_power_state" must be "on", "off", or null. This should be extracted specifically for 'toggle_machine_power' intent.
     - If a parameter is not relevant to the identified intent, its value MUST be `null`.
     - If an intent or entity cannot be confidently identified from the provided lists, its value MUST be `null`.
     - If multiple entities are mentioned, identify the primary one or null if ambiguous.
@@ -133,31 +132,34 @@ def parse_command(text):
     **Examples (User Input -> JSON Output):**
 
     1. User: "What's the current temperature in the Furnace?"
-        Output: {{"intent": "temperature", "entity_name": "Furnace", "entity_type": "machine", "light_num": null, "cartons_sold": null, "cartons_produced": null, "buyer": null}}
+       Output: {{"intent": "temperature", "entity_name": "Furnace", "entity_type": "machine", "light_num": null, "cartons_sold": null, "cartons_produced": null, "buyer": null, "desired_power_state": null}}
 
     2. User: "Is the Encapsulator having any issues with maintenance?"
-        Output: {{"intent": "maintenance", "entity_name": "Encapsulator", "entity_type": "machine", "light_num": null, "cartons_sold": null, "cartons_produced": null, "buyer": null}}
+       Output: {{"intent": "maintenance", "entity_name": "Encapsulator", "entity_type": "machine", "light_num": null, "cartons_sold": null, "cartons_produced": null, "buyer": null, "desired_power_state": null}}
 
     3. User: "Turn on light number one in the Machine Room."
-        Output: {{"intent": "toggle_lights", "entity_name": "Machine Room", "entity_type": "room", "light_num": 1, "cartons_sold": null, "cartons_produced": null, "buyer": null}}
+       Output: {{"intent": "toggle_lights", "entity_name": "Machine Room", "entity_type": "room", "light_num": 1, "cartons_sold": null, "cartons_produced": null, "buyer": null, "desired_power_state": null}}
 
     4. User: "Switch off the second light in the Warehouse."
-        Output: {{"intent": "toggle_lights", "entity_name": "Warehouse", "entity_type": "room", "light_num": 2, "cartons_sold": null, "cartons_produced": null, "buyer": null}}
+       Output: {{"intent": "toggle_lights", "entity_name": "Warehouse", "entity_type": "room", "light_num": 2, "cartons_sold": null, "cartons_produced": null, "buyer": null, "desired_power_state": null}}
 
     5. User: "Start the Cooler."
-        Output: {{"intent": "toggle_machine_power", "entity_name": "Cooler", "entity_type": "machine", "light_num": null, "cartons_sold": null, "cartons_produced": null, "buyer": null}}
+       Output: {{"intent": "toggle_machine_power", "entity_name": "Cooler", "entity_type": "machine", "light_num": null, "cartons_sold": null, "cartons_produced": null, "buyer": "null", "desired_power_state": "on"}}
 
-    6. User: "Record a sale of 50 cartons to John Doe."
-        Output: {{"intent": "record_sale", "entity_name": null, "entity_type": null, "light_num": null, "cartons_sold": 50, "cartons_produced": null, "buyer": "John Doe"}}
+    6. User: "Turn off the Packager."
+       Output: {{"intent": "toggle_machine_power", "entity_name": "Packager", "entity_type": "machine", "light_num": null, "cartons_sold": null, "cartons_produced": null, "buyer": "null", "desired_power_state": "off"}}
 
-    7. User: "Log 100 produced cartons."
-        Output: {{"intent": "record_cartons", "entity_name": null, "entity_type": null, "light_num": null, "cartons_sold": null, "cartons_produced": 100, "buyer": null}}
+    7. User: "Record a sale of 50 cartons to John Doe."
+       Output: {{"intent": "record_sale", "entity_name": null, "entity_type": null, "light_num": null, "cartons_sold": 50, "cartons_produced": null, "buyer": "John Doe", "desired_power_state": null}}
 
-    8. User: "What's up with the Cleaner?"
-        Output: {{"intent": "not_normal", "entity_name": "Cleaner", "entity_type": "machine", "light_num": null, "cartons_sold": null, "cartons_produced": null, "buyer": null}}
+    8. User: "Log 100 produced cartons."
+       Output: {{"intent": "record_cartons", "entity_name": null, "entity_type": null, "light_num": null, "cartons_sold": null, "cartons_produced": 100, "buyer": null, "desired_power_state": null}}
 
-    9. User: "Hello, how are you?"
-        Output: {{"intent": null, "entity_name": null, "entity_type": null, "light_num": null, "cartons_sold": null, "cartons_produced": null, "buyer": null}}
+    9. User: "What's up with the Cleaner?"
+       Output: {{"intent": "not_normal", "entity_name": "Cleaner", "entity_type": "machine", "light_num": null, "cartons_sold": null, "cartons_produced": null, "buyer": null, "desired_power_state": null}}
+
+    10. User: "Hello, how are you?"
+        Output: {{"intent": "greeting", "entity_name": null, "entity_type": null, "light_num": null, "cartons_sold": null, "cartons_produced": null, "buyer": null, "desired_power_state": null}}
     ---
 
     **User Command:** "{text}"
@@ -185,9 +187,10 @@ def parse_command(text):
                     "light_num": {"type": "INTEGER", "nullable": True},
                     "cartons_sold": {"type": "INTEGER", "nullable": True},
                     "cartons_produced": {"type": "INTEGER", "nullable": True},
-                    "buyer": {"type": "STRING", "nullable": True}
+                    "buyer": {"type": "STRING", "nullable": True},
+                    "desired_power_state": {"type": "STRING", "enum": ["on", "off", "null"], "nullable": True} # Added new property
                 },
-                "propertyOrdering": ["intent", "entity_name", "entity_type", "light_num", "cartons_sold", "cartons_produced", "buyer"]
+                "propertyOrdering": ["intent", "entity_name", "entity_type", "light_num", "cartons_sold", "cartons_produced", "buyer", "desired_power_state"] # Added to ordering
             }
         }
     }
@@ -196,11 +199,11 @@ def parse_command(text):
         logger.info(f"Sending prompt to Gemini API for text: '{text}'")
         response = requests.post(f"{GEMINI_API_URL}?key={GEMINI_API_KEY}", headers=headers, json=payload)
         response.raise_for_status()
-
+        
         gemini_response = response.json()
-
+        
         llm_output_text = gemini_response.get("candidates", [])[0].get("content", {}).get("parts", [])[0].get("text", "{}")
-
+        
         parsed_llm_output = json.loads(llm_output_text)
 
         intent = parsed_llm_output.get("intent")
@@ -210,30 +213,39 @@ def parse_command(text):
         cartons_sold = parsed_llm_output.get("cartons_sold")
         cartons_produced = parsed_llm_output.get("cartons_produced")
         buyer = parsed_llm_output.get("buyer")
-
+        desired_power_state = parsed_llm_output.get("desired_power_state") # Get new property
+        
         if entity_name:
             entity_name = entity_name.title()
 
-        logger.info(f"Gemini parsed: Intent={intent}, Entity Name={entity_name}, Entity Type={entity_type}, Light Num={light_num}, Cartons Sold={cartons_sold}, Cartons Produced={cartons_produced}, Buyer={buyer}")
-        return intent, entity_name, entity_type, light_num, cartons_sold, cartons_produced, buyer
+        logger.info(f"Gemini parsed: Intent={intent}, Entity Name={entity_name}, Entity Type={entity_type}, Light Num={light_num}, Cartons Sold={cartons_sold}, Cartons Produced={cartons_produced}, Buyer={buyer}, Desired Power State={desired_power_state}")
+        return intent, entity_name, entity_type, light_num, cartons_sold, cartons_produced, buyer, desired_power_state # Return new property
 
     except requests.exceptions.RequestException as e:
         logger.error(f"Error calling Gemini API: {e}")
-        return None, None, None, None, None, None, None
+        return None, None, None, None, None, None, None, None
     except (json.JSONDecodeError, IndexError, KeyError) as e:
         logger.error(f"Error parsing Gemini API response or unexpected format: {e}, Response: {response.text}")
-        return None, None, None, None, None, None, None
+        return None, None, None, None, None, None, None, None
 
 # Field map from config (used by get_sensor_data)
 field_map = config_data.get("field_mappings", {})
 maintenance_status_map = config_data.get("maintenance_status_map", {})
 
+# New mapping for user-friendly maintenance status descriptions
+MAINTENANCE_DISPLAY_NAMES = {
+    "normal_operation": "operating normally",
+    "not_normal": "not operating normally",
+    "clogged_filter": "having a clogged filter",
+    "bearing_wear": "experiencing bearing wear",
+    "alerts": "having alerts" # For "are there any alerts?"
+}
 
 # get_sensor_data NO LONGER ACCEPTS user_auth_token, as /data/all is assumed public
 def get_sensor_data(intent, entity_name, entity_type):
     # Fetch data from the external API first (no auth token passed here)
     all_data = _fetch_all_external_data_internal()
-
+    
     # Check if _fetch_all_external_data_internal returned an error dictionary
     if isinstance(all_data, dict) and "error" in all_data:
         return all_data["error"] # Return the error message directly
@@ -245,29 +257,53 @@ def get_sensor_data(intent, entity_name, entity_type):
     machines_data = all_data.get("machines", [])
     cartons_num = all_data.get("cartons_num", 0)
 
-    # Handle intents related to machine status (normal_operation, not_normal, clogged_filter, bearing_wear)
-    if intent in maintenance_status_map:
+    # Handle intents related to machine status (normal_operation, not_normal, clogged_filter, bearing_wear, alerts)
+    if intent in maintenance_status_map or intent == "alerts": # Added "alerts" intent
         matching_machines = []
-        target_maintenance_status = maintenance_status_map[intent]
+        target_maintenance_status = maintenance_status_map.get(intent, None) # Use .get for alerts
 
-        for machine in machines_data:
-            if "maintenance" in machine:
-                if isinstance(target_maintenance_status, dict) and "$ne" in target_maintenance_status:
-                    if machine["maintenance"] != target_maintenance_status["$ne"]:
-                        matching_machines.append(machine["name"])
-                elif machine["maintenance"] == target_maintenance_status:
+        # If intent is "alerts", we want to find machines that are *not* "normal_operation"
+        if intent == "alerts":
+            for machine in machines_data:
+                if machine.get("maintenance") != "normal_operation":
                     matching_machines.append(machine["name"])
+            if not matching_machines:
+                return "There are no machines currently reporting alerts or abnormal status."
+            return f"The machines currently reporting alerts or abnormal status are: {', '.join(matching_machines)}."
 
-        if not matching_machines:
-            return f"No machines found with {intent.replace('_', ' ')} status."
-        return f"The machines with {intent.replace('_', ' ')} are: {', '.join(matching_machines)}."
+        # For other specific maintenance intents
+        if target_maintenance_status:
+            for machine in machines_data:
+                # If entity_name is provided, filter for that specific machine
+                if entity_name and machine["name"].lower() != entity_name.lower():
+                    continue 
+
+                if "maintenance" in machine:
+                    if isinstance(target_maintenance_status, dict) and "$ne" in target_maintenance_status:
+                        if machine["maintenance"] != target_maintenance_status["$ne"]:
+                            matching_machines.append(machine["name"])
+                    elif machine["maintenance"] == target_maintenance_status:
+                        matching_machines.append(machine["name"])
+            
+            display_name = MAINTENANCE_DISPLAY_NAMES.get(intent, intent.replace('_', ' ')) # Get user-friendly name
+
+            if not matching_machines:
+                if entity_name:
+                    return f"The {entity_name} is not currently {display_name}."
+                return f"No machines found that are currently {display_name}."
+            
+            if entity_name and matching_machines: # If specific entity was asked and found
+                return f"The {entity_name} is currently {display_name}."
+            
+            return f"The machines currently {display_name} are: {', '.join(matching_machines)}."
+
 
     # Handle intents related to cartons produced/sold (using data from external API)
     if intent == "cartons_produced":
         return f"The total number of cartons produced is currently {cartons_num}."
     elif intent == "cartons_sold":
         return "I can tell you the total cartons, but not specifically cartons sold from this data."
-
+        
     # Handle specific sensor data requests (temperature, noise, humidity, smoke, vibration, power_usage, lights)
     target_entity = None
     if entity_type == "machine":
@@ -286,7 +322,7 @@ def get_sensor_data(intent, entity_name, entity_type):
         if field_info:
             field_name = field_info["field_name"]
             unit = field_info["unit"]
-
+            
             if field_name in target_entity:
                 if intent == "lights" and entity_type == "room":
                     light_statuses = ["off", "on"]
@@ -295,12 +331,17 @@ def get_sensor_data(intent, entity_name, entity_type):
                 else:
                     return f"The {intent.replace('_', ' ')} of the {target_entity['name']} is {target_entity[field_name]} {unit}."
         return f"No {intent.replace('_', ' ')} data found for {target_entity['name']}."
+    
+    # Fallback for general data queries if entity_name is None or entity not found
+    if entity_name: # If an entity was specified but not found
+        return f"No data found for {entity_name}."
+    # If no specific entity was mentioned and no other intent matched
+    return "I couldn't find specific data for that request."
 
-    return f"No data found for {entity_name}."
 
 # Function to perform actions via external API POST requests
-# This function still requires and uses user_auth_token
-def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, cartons_produced, buyer, user_auth_token):
+# Removed 'async' from function definition
+def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, cartons_produced, buyer, user_auth_token, desired_power_state):
     if not user_auth_token:
         logger.warning("No authentication token provided for action request.")
         return "I'm sorry, I need you to log in first to perform this action."
@@ -309,14 +350,14 @@ def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, ca
         "Authorization": f"Bearer {user_auth_token}",
         "Content-Type": "application/json"
     }
-
+    
     try:
         if intent == "toggle_lights":
             if not entity_name or not entity_type == "room" or light_num is None:
                 return "I need a room name and the light number (1 or 2) to toggle lights."
             if light_num not in [1, 2]:
                 return "Light number must be 1 or 2."
-
+            
             payload = {
                 "room_name": entity_name,
                 "light_num": light_num
@@ -333,6 +374,29 @@ def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, ca
         elif intent == "toggle_machine_power":
             if not entity_name or not entity_type == "machine":
                 return "I need a machine name to toggle its power."
+            
+            # 1. Fetch current machine data to get its power status
+            all_data = _fetch_all_external_data_internal()
+            if isinstance(all_data, dict) and "error" in all_data:
+                return all_data["error"] # Return the error message directly
+            
+            current_machine_data = None
+            for machine in all_data.get("machines", []):
+                if machine["name"].lower() == entity_name.lower():
+                    current_machine_data = machine
+                    break
+            
+            if not current_machine_data:
+                return f"Could not find data for machine: {entity_name}."
+
+            current_power_status = "on" if current_machine_data.get("power") else "off"
+            
+            # 2. Compare desired state with current state
+            if desired_power_state: # If user specified "on" or "off"
+                if desired_power_state == current_power_status:
+                    return f"The {entity_name} is already {current_power_status}."
+            
+            # Proceed with toggle if no desired state, or if desired state doesn't match current
             payload = {
                 "machine_name": entity_name
             }
@@ -347,7 +411,7 @@ def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, ca
         elif intent == "record_sale":
             if cartons_sold is None or not isinstance(cartons_sold, int) or cartons_sold <= 0:
                 return "Please specify a valid number of cartons sold."
-
+            
             payload = {
                 "cartons_sold": cartons_sold,
                 "DateTime": datetime.now().isoformat(),
@@ -434,7 +498,7 @@ def transcribe():
         model = get_whisper_model()
         segments, info = model.transcribe(path)
         transcribed_text = " ".join([segment.text for segment in segments])
-
+        
         return jsonify({"text": transcribed_text})
     except Exception as e:
         logger.error(f"Transcription error: {e}")
@@ -444,36 +508,41 @@ def transcribe():
             os.remove(path)
 
 @app.route("/process_command", methods=["POST"])
-# REMOVE 'async' from this function definition
+# REMOVED 'async' from here
 def process_command():
     text = request.get_json().get("text", "")
-    # Extract token from the request headers sent by the frontend
-    # This token is now the user's JWT from the MERN API
     user_auth_token = request.headers.get('Authorization', '').replace('Bearer ', '')
 
     logger.info(f"Processing command: {text}")
     logger.info(f"Received user_auth_token: {'Present' if user_auth_token else 'Absent'}")
-
-    # Parse command using LLM, returns all extracted parameters
-    intent, entity_name, entity_type, light_num, cartons_sold, cartons_produced, buyer = parse_command(text)
-
+    
+    # Parse command using LLM, returns all extracted parameters including desired_power_state
+    intent, entity_name, entity_type, light_num, cartons_sold, cartons_produced, buyer, desired_power_state = parse_command(text) 
+    
     response_text = "I'm sorry, I couldn't understand your command or extract enough information."
+
+    # --- Handle Greetings First ---
+    if intent == "greeting":
+        return jsonify({
+            "response": "Hello there! How can I assist you with the factory today?",
+            "audio_filename": os.path.basename(text_to_speech("Hello there! How can I assist you with the factory today?")),
+            "audio_url": f"/audio/{os.path.basename(text_to_speech('Hello there! How can I assist you with the factory today?'))}"
+        })
 
     if intent:
         action_intents = ["toggle_lights", "toggle_machine_power", "record_sale", "record_cartons"]
-
+        
         if intent in action_intents:
-            # Pass the user_auth_token to the perform_action function
-            # REMOVE 'await' from this call
-            response_text = perform_action(intent, entity_name, entity_type, light_num, cartons_sold, cartons_produced, buyer, user_auth_token)
+            # Pass the user_auth_token and desired_power_state to the perform_action function
+            # REMOVED 'await' from here
+            response_text = perform_action(intent, entity_name, entity_type, light_num, cartons_sold, cartons_produced, buyer, user_auth_token, desired_power_state)
         else:
             # DO NOT pass the user_auth_token to the get_sensor_data function
-            # as /data/all is assumed to be public.
             response_text = get_sensor_data(intent, entity_name, entity_type)
-
+        
         logger.info(f"Generated response: {response_text}")
         audio_file = text_to_speech(response_text)
-        audio_name = os.path.basename(audio_file) if audio_file else None
+        audio_name = os.path.basename(audio_file) if audio_file else None 
         return jsonify({
             "response": response_text,
             "audio_filename": audio_name,
@@ -481,6 +550,7 @@ def process_command():
         })
     logger.warning(f"Could not understand command: {text}")
     return jsonify({"error": f"Could not understand: {text}"}), 400
+
 
 @app.route("/audio/<filename>", methods=["GET"])
 def serve_audio(filename):
@@ -491,10 +561,8 @@ def serve_audio(filename):
         return jsonify({"error": "File not found"}), 404
 
 if __name__ == "__main__":
-    # This block is for LOCAL DEVELOPMENT ONLY.
-    # The deployment environment (like Vercel) will use the `asgi_app` object and your Procfile.
     port = int(os.environ.get("PORT", 5000))
-    logger.info(f"Starting Flask app (development server) on port {port}")
+    logger.info(f"Starting Flask app on port {port}")
     app.run(host="0.0.0.0", port=port)
 
 # THIS LINE MUST BE OUTSIDE the `if __name__ == "__main__":` block
