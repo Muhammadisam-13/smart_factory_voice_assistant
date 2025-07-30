@@ -11,15 +11,15 @@ import time
 from datetime import datetime, timedelta
 import requests
 import json
-from dotenv import load_dotenv # Make sure dotenv is installed: pip install python-dotenv
-from asgiref.wsgi import WsgiToAsgi # This is crucial for Uvicorn
+from dotenv import load_dotenv
+from asgiref.wsgi import WsgiToAsgi
 
 # Setup logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 # Load environment variables FIRST
-load_dotenv() # Call this early to ensure environment variables are available
+load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
@@ -44,7 +44,7 @@ except json.JSONDecodeError as e:
 def get_whisper_model():
     if not hasattr(get_whisper_model, "model"):
         logger.info("Loading faster-whisper 'tiny' model with int8 quantization...")
-        get_whisper_model.model = WhisperModel("tiny", device="cpu", compute_type="int8") # Consider 'cuda' for GPU if available on deploy
+        get_whisper_model.model = WhisperModel("tiny", device="cpu", compute_type="int8")
         logger.info("Faster-whisper model loaded.")
     return get_whisper_model.model
 
@@ -115,7 +115,7 @@ def parse_command(text):
     - "cartons_sold" must be an integer (number of cartons sold, or null).
     - "cartons_produced" must be an integer (number of cartons produced, or null).
     - "buyer" must be a string (name of the buyer, or null).
-    - "desired_power_state" must be "on", "off", or null. This should be extracted specifically for 'toggle_machine_power' intent.
+    - "desired_power_state" must be "on", "off", or null. This should be extracted specifically for 'toggle_machine_power' AND 'toggle_lights' intents.
     - If a parameter is not relevant to the identified intent, its value MUST be `null`.
     - If an intent or entity cannot be confidently identified from the provided lists, its value MUST be `null`.
     - If multiple entities are mentioned, identify the primary one or null if ambiguous.
@@ -138,16 +138,16 @@ def parse_command(text):
        Output: {{"intent": "maintenance", "entity_name": "Encapsulator", "entity_type": "machine", "light_num": null, "cartons_sold": null, "cartons_produced": null, "buyer": null, "desired_power_state": null}}
 
     3. User: "Turn on light number one in the Machine Room."
-       Output: {{"intent": "toggle_lights", "entity_name": "Machine Room", "entity_type": "room", "light_num": 1, "cartons_sold": null, "cartons_produced": null, "buyer": null, "desired_power_state": null}}
+       Output: {{"intent": "toggle_lights", "entity_name": "Machine Room", "entity_type": "room", "light_num": 1, "cartons_sold": null, "cartons_produced": null, "buyer": null, "desired_power_state": "on"}}
 
     4. User: "Switch off the second light in the Warehouse."
-       Output: {{"intent": "toggle_lights", "entity_name": "Warehouse", "entity_type": "room", "light_num": 2, "cartons_sold": null, "cartons_produced": null, "buyer": null, "desired_power_state": null}}
+       Output: {{"intent": "toggle_lights", "entity_name": "Warehouse", "entity_type": "room", "light_num": 2, "cartons_sold": null, "cartons_produced": null, "buyer": null, "desired_power_state": "off"}}
 
     5. User: "Start the Cooler."
-       Output: {{"intent": "toggle_machine_power", "entity_name": "Cooler", "entity_type": "machine", "light_num": null, "cartons_sold": null, "cartons_produced": null, "buyer": null, "desired_power_state": "on"}}
+       Output: {{"intent": "toggle_machine_power", "entity_name": "Cooler", "entity_type": "machine", "light_num": null, "cartons_sold": null, "cartons_produced": null, "buyer": "null", "desired_power_state": "on"}}
 
     6. User: "Turn off the Packager."
-       Output: {{"intent": "toggle_machine_power", "entity_name": "Packager", "entity_type": "machine", "light_num": null, "cartons_sold": null, "cartons_produced": null, "buyer": null, "desired_power_state": "off"}}
+       Output: {{"intent": "toggle_machine_power", "entity_name": "Packager", "entity_type": "machine", "light_num": null, "cartons_sold": null, "cartons_produced": null, "buyer": "null", "desired_power_state": "off"}}
 
     7. User: "Record a sale of 50 cartons to John Doe."
        Output: {{"intent": "record_sale", "entity_name": null, "entity_type": null, "light_num": null, "cartons_sold": 50, "cartons_produced": null, "buyer": "John Doe", "desired_power_state": null}}
@@ -364,6 +364,30 @@ def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, ca
             if light_num not in [1, 2]:
                 return "Light number must be 1 or 2."
             
+            # 1. Fetch current room data to get light status
+            all_data = _fetch_all_external_data_internal()
+            if isinstance(all_data, dict) and "error" in all_data:
+                return all_data["error"] # Return the error message directly
+            
+            current_room_data = None
+            for room in all_data.get("rooms", []):
+                if room["name"].lower() == entity_name.lower():
+                    current_room_data = room
+                    break
+            
+            if not current_room_data or "lights" not in current_room_data or len(current_room_data["lights"]) < light_num:
+                return f"Could not find light {light_num} data for room: {entity_name}."
+
+            # Convert boolean (0/1) light state to "on"/"off" string
+            current_light_status_int = current_room_data["lights"][light_num - 1]
+            current_light_status_str = "on" if current_light_status_int == 1 else "off"
+            
+            # 2. Compare desired state with current state
+            if desired_power_state: # If user specified "on" or "off"
+                if desired_power_state == current_light_status_str:
+                    return f"Light {light_num} in the {entity_name} is already {current_light_status_str}."
+            
+            # Proceed with toggle if no desired state, or if desired state doesn't match current
             payload = {
                 "room_name": entity_name,
                 "light_num": light_num
@@ -395,7 +419,6 @@ def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, ca
             if not current_machine_data:
                 return f"Could not find data for machine: {entity_name}."
 
-            # Convert boolean power to "on"/"off" string
             current_power_status_str = "on" if current_machine_data.get("power") else "off"
             
             # 2. Compare desired state with current state
@@ -450,6 +473,8 @@ def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, ca
 
     except requests.exceptions.HTTPError as e:
         logger.error(f"HTTP error performing action for {intent}: {e.response.status_code} - {e.response.text}")
+        # Log the full response text from the MERN API for debugging HTML errors
+        logger.error(f"MERN API Response Text (HTTPError): {e.response.text}") 
         if e.response.status_code == 401 or e.response.status_code == 403:
             return "Authentication failed. Please ensure you are logged in."
         elif e.response.status_code == 400:
@@ -457,9 +482,12 @@ def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, ca
         elif e.response.status_code == 404:
             return f"Entity not found: {e.response.json().get('error', e.response.text)}"
         return f"Failed to perform action due to a server error: {e.response.text}"
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Network error performing action for {intent}: {e}")
-        return "I'm sorry, I'm having trouble connecting to the factory system."
+    except (json.JSONDecodeError, IndexError, KeyError) as e:
+        logger.error(f"Error parsing MERN API response or unexpected format: {e}")
+        # Log the full response text if JSON decoding failed
+        if 'response' in locals() and hasattr(response, 'text'):
+            logger.error(f"MERN API Response Text (JSONDecodeError): {response.text}")
+        return "An unexpected error occurred while trying to process the response from the factory system."
     except Exception as e:
         logger.error(f"Unexpected error performing action for {intent}: {e}")
         return "An unexpected error occurred while trying to perform that action."
