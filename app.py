@@ -394,7 +394,7 @@ def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, ca
             # Proceed with toggle if no desired state, or if desired state doesn't match current
             payload = {
                 "room_name": entity_name,
-                "light_num": light_num
+                "light_num": light_num-1
             }
             api_endpoint = f"{EXTERNAL_API_BASE_URL}/toggle/lights"
             logger.info(f"Sending toggle request for light {light_num} in {entity_name}: {payload} to {api_endpoint}")
