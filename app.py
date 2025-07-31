@@ -285,7 +285,9 @@ def get_sensor_data(intent, entity_name, entity_type):
             if target_machine and "maintenance" in target_machine:
                 actual_maintenance_status = target_machine["maintenance"]
                 display_name = MAINTENANCE_DISPLAY_NAMES.get(actual_maintenance_status, actual_maintenance_status.replace('_', ' '))
-                return f"The {entity_name} is currently {display_name}."
+                if actual_maintenance_status != "Normal Operation":
+                    return f"The {entity_name} has a {display_name}."
+                else: return f"The {entity_name} is operating normally."
             else:
                 return f"Could not find maintenance data for {entity_name}."
         else:
