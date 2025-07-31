@@ -212,6 +212,7 @@ def parse_command(text, response_language=None):
     }
 
     try:
+        logger.debug(f"Gemini Language Instruction: {language_instruction}") # NEW DEBUG LOG
         logger.info(f"Sending prompt to Gemini API for text: '{text}'")
         response = requests.post(f"{GEMINI_API_URL}?key={GEMINI_API_KEY}", headers=headers, json=payload)
         response.raise_for_status()
@@ -219,6 +220,7 @@ def parse_command(text, response_language=None):
         gemini_response = response.json()
         
         llm_output_text = gemini_response.get("candidates", [])[0].get("content", {}).get("parts", [])[0].get("text", "{}")
+        logger.debug(f"Raw Gemini LLM Output Text: {llm_output_text}") # NEW DEBUG LOG
         
         parsed_llm_output = json.loads(llm_output_text)
 
