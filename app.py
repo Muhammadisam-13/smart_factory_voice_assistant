@@ -59,7 +59,7 @@ try:
 except Exception as e:
     logger.error("MongoDB connection failed: %s", e)
 
-# External MERN API Configuration - Corrected URL (as per user's latest info)
+# External MERN API Configuration
 EXTERNAL_API_BASE_URL = "https://model-deployed-production.up.railway.app" 
 
 # Gemini API Configuration
@@ -83,24 +83,24 @@ def _fetch_all_external_data_internal():
     except requests.exceptions.RequestException as e:
         logger.error(f"Network error fetching data from external API: {e}")
         return {"error": "Network error retrieving data from factory system."}
-    except ValueError as e:
-        logger.error(f"Error parsing JSON from external API: {e}")
+    except ValueError as e: # This is the JSONDecodeError
+        logger.error(f"Error parsing JSON from external API: {e}. Raw response text: {response.text if 'response' in locals() else 'No response object'}")
         return {"error": "Error parsing data from factory system."}
 
 # --- parse_command using Gemini LLM (Expanded for Actions and parameters) ---
 def parse_command(text):
     if not GEMINI_API_KEY:
         logger.error("GEMINI_API_KEY environment variable not set.")
-        return None, None, None, None, None, None, None, None # Added one more None for desired_power_state
+        return None, None, None, None, None, None, None, None
 
     # Get entities from config for the prompt
     machine_names = config_data.get("entities", {}).get("machines", [])
     room_names = config_data.get("entities", {}).get("rooms", [])
     
-    # Define all possible intents from config
+    # Define all possible intents from config - ADDED "get_machine_status"
     possible_intents = list(config_data.get("field_mappings", {}).keys()) + \
                        list(config_data.get("maintenance_status_map", {}).keys()) + \
-                       ["toggle_lights", "toggle_machine_power", "record_sale", "record_cartons", "greeting", "alerts"] # Added "greeting" and "alerts" for LLM to identify
+                       ["toggle_lights", "toggle_machine_power", "record_sale", "record_cartons", "greeting", "alerts", "get_machine_status"]
     
     prompt = f"""
     You are an advanced AI assistant for a smart factory. Your primary function is to accurately parse natural language commands from users to identify their core intent and any specific factory entity (machine or room) they are referring to, as well as any numerical or specific string parameters required for actions.
@@ -163,6 +163,9 @@ def parse_command(text):
 
     11. User: "Are there any alerts?"
         Output: {{"intent": "alerts", "entity_name": null, "entity_type": null, "light_num": null, "cartons_sold": null, "cartons_produced": null, "buyer": null, "desired_power_state": null}}
+    
+    12. User: "What is the status of the Encapsulator?"
+        Output: {{"intent": "get_machine_status", "entity_name": "Encapsulator", "entity_type": "machine", "light_num": null, "cartons_sold": null, "cartons_produced": null, "buyer": null, "desired_power_state": null}}
     ---
 
     **User Command:** "{text}"
@@ -191,9 +194,9 @@ def parse_command(text):
                     "cartons_sold": {"type": "INTEGER", "nullable": True},
                     "cartons_produced": {"type": "INTEGER", "nullable": True},
                     "buyer": {"type": "STRING", "nullable": True},
-                    "desired_power_state": {"type": "STRING", "enum": ["on", "off", "null"], "nullable": True} # Added new property
+                    "desired_power_state": {"type": "STRING", "enum": ["on", "off", "null"], "nullable": True}
                 },
-                "propertyOrdering": ["intent", "entity_name", "entity_type", "light_num", "cartons_sold", "cartons_produced", "buyer", "desired_power_state"] # Added to ordering
+                "propertyOrdering": ["intent", "entity_name", "entity_type", "light_num", "cartons_sold", "cartons_produced", "buyer", "desired_power_state"]
             }
         }
     }
@@ -216,13 +219,13 @@ def parse_command(text):
         cartons_sold = parsed_llm_output.get("cartons_sold")
         cartons_produced = parsed_llm_output.get("cartons_produced")
         buyer = parsed_llm_output.get("buyer")
-        desired_power_state = parsed_llm_output.get("desired_power_state") # Get new property
+        desired_power_state = parsed_llm_output.get("desired_power_state")
         
         if entity_name:
             entity_name = entity_name.title()
 
         logger.info(f"Gemini parsed: Intent={intent}, Entity Name={entity_name}, Entity Type={entity_type}, Light Num={light_num}, Cartons Sold={cartons_sold}, Cartons Produced={cartons_produced}, Buyer={buyer}, Desired Power State={desired_power_state}")
-        return intent, entity_name, entity_type, light_num, cartons_sold, cartons_produced, buyer, desired_power_state # Return new property
+        return intent, entity_name, entity_type, light_num, cartons_sold, cartons_produced, buyer, desired_power_state
 
     except requests.exceptions.RequestException as e:
         logger.error(f"Error calling Gemini API: {e}")
@@ -237,11 +240,11 @@ maintenance_status_map = config_data.get("maintenance_status_map", {})
 
 # New mapping for user-friendly maintenance status descriptions
 MAINTENANCE_DISPLAY_NAMES = {
-    "normal_operation": "operating normally",
+    "Normal Operation": "operating normally", # **FIXED: Key now matches database string exactly**
     "not_normal": "not operating normally",
     "clogged_filter": "having a clogged filter",
     "bearing_wear": "experiencing bearing wear",
-    "alerts": "having alerts" # For "are there any alerts?"
+    "alerts": "having alerts"
 }
 
 # get_sensor_data NO LONGER ACCEPTS user_auth_token, as /data/all is assumed public
@@ -251,36 +254,61 @@ def get_sensor_data(intent, entity_name, entity_type):
     
     # Check if _fetch_all_external_data_internal returned an error dictionary
     if isinstance(all_data, dict) and "error" in all_data:
-        return all_data["error"] # Return the error message directly
+        return all_data["error"]
 
-    if not all_data: # If it's None (e.g., network error)
+    if not all_data:
         return "I'm sorry, I couldn't retrieve the latest factory data."
 
     rooms_data = all_data.get("rooms", [])
     machines_data = all_data.get("machines", [])
     cartons_num = all_data.get("cartons_num", 0)
 
-    # Handle intents related to machine status (normal_operation, not_normal, clogged_filter, bearing_wear, alerts)
-    if intent in maintenance_status_map or intent == "alerts": # Added "alerts" intent
-        matching_machines = []
-        target_maintenance_status = maintenance_status_map.get(intent, None) # Use .get for alerts
+    # --- DEBUG LOGGING FOR MAINTENANCE STATUSES ---
+    logger.debug("--- Current Machine Maintenance Statuses from MERN ---")
+    if machines_data:
+        for machine in machines_data:
+            logger.debug(f"Machine: {machine.get('name')}, Maintenance Status: {machine.get('maintenance')}")
+    else:
+        logger.debug("No machine data found from MERN.")
+    logger.debug("-----------------------------------------------------")
+    # --- END DEBUG LOGGING ---
 
-        # If intent is "alerts", we want to find machines that are *not* "normal_operation"
+    # **NEW LOGIC BLOCK FOR GENERAL MACHINE STATUS**
+    if intent == "get_machine_status":
+        if entity_name and entity_type == "machine":
+            target_machine = None
+            for machine in machines_data:
+                if machine["name"].lower() == entity_name.lower():
+                    target_machine = machine
+                    break
+            
+            if target_machine and "maintenance" in target_machine:
+                actual_maintenance_status = target_machine["maintenance"]
+                display_name = MAINTENANCE_DISPLAY_NAMES.get(actual_maintenance_status, actual_maintenance_status.replace('_', ' '))
+                return f"The {entity_name} is currently {display_name}."
+            else:
+                return f"Could not find maintenance data for {entity_name}."
+        else:
+            return "Please specify a machine name to get its status."
+
+
+    # Handle intents related to machine status (normal_operation, not_normal, clogged_filter, bearing_wear, alerts)
+    # This block now primarily handles queries like "Which machines are [status]?"
+    if intent in maintenance_status_map or intent == "alerts":
+        matching_machines = []
+        target_maintenance_status = maintenance_status_map.get(intent, None) 
+
         if intent == "alerts":
             for machine in machines_data:
-                if machine.get("maintenance") != "Normal Operation":
+                if machine.get("maintenance") != "Normal Operation": # **FIXED: Compare against exact database string**
                     matching_machines.append(machine["name"])
             if not matching_machines:
                 return "There are no machines currently reporting alerts or abnormal status."
             return f"The machines currently reporting alerts or abnormal status are: {', '.join(matching_machines)}."
 
-        # For other specific maintenance intents
+        # For other specific maintenance intents (general query)
         if target_maintenance_status:
             for machine in machines_data:
-                # If entity_name is provided, filter for that specific machine
-                if entity_name and machine["name"].lower() != entity_name.lower():
-                    continue 
-
                 if "maintenance" in machine:
                     if isinstance(target_maintenance_status, dict) and "$ne" in target_maintenance_status:
                         if machine["maintenance"] != target_maintenance_status["$ne"]:
@@ -288,19 +316,16 @@ def get_sensor_data(intent, entity_name, entity_type):
                     elif machine["maintenance"] == target_maintenance_status:
                         matching_machines.append(machine["name"])
             
-            display_name = MAINTENANCE_DISPLAY_NAMES.get(intent, intent.replace('_', ' ')) # Get user-friendly name
+            display_name = MAINTENANCE_DISPLAY_NAMES.get(intent, intent.replace('_', ' ')) 
 
             if not matching_machines:
-                if entity_name:
-                    # Specific machine was asked, but it's not in this status
+                if entity_name: # This case should ideally be handled by "get_machine_status" now.
                     return f"The {entity_name} is not currently {display_name}."
-                # General query, but no machines found in this status
                 return f"No machines found that are currently {display_name}."
             
-            if entity_name and matching_machines: # If specific entity was asked and found
+            if entity_name and matching_machines: # This case should ideally be handled by "get_machine_status" now.
                 return f"The {entity_name} is currently {display_name}."
             
-            # General query, and machines found
             return f"The machines currently {display_name} are: {', '.join(matching_machines)}."
 
 
@@ -332,23 +357,19 @@ def get_sensor_data(intent, entity_name, entity_type):
             if field_name in target_entity:
                 if intent == "lights" and entity_type == "room":
                     light_statuses = ["off", "on"]
-                    # Read boolean directly from MERN, then convert for display
-                    current_light_state_bool = target_entity["lights"][light_num-1]
                     current_light_states = [light_statuses[int(l)] for l in target_entity["lights"]]
                     return f"In the {target_entity['name']}, light one is {current_light_states[0]} and light two is {current_light_states[1]}."
                 else:
                     return f"The {intent.replace('_', ' ')} of the {target_entity['name']} is {target_entity[field_name]} {unit}."
-        return f"No {intent.replace('_', ' ')} data found."
+        return f"No {intent.replace('_', ' ')} data found for {target_entity['name']}."
     
     # Fallback for general data queries if entity_name is None or entity not found
-    if entity_name: # If an entity was specified but not found
-        return f"No data found."
-    # If no specific entity was mentioned and no other intent matched
+    if entity_name:
+        return f"No data found for {entity_name}."
     return "I couldn't find specific data for that request."
 
 
 # Function to perform actions via external API POST requests
-# REMOVED 'async' from function definition
 def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, cartons_produced, buyer, user_auth_token, desired_power_state):
     if not user_auth_token:
         logger.warning("No authentication token provided for action request.")
@@ -369,7 +390,7 @@ def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, ca
             # 1. Fetch current room data to get light status
             all_data = _fetch_all_external_data_internal()
             if isinstance(all_data, dict) and "error" in all_data:
-                return all_data["error"] # Return the error message directly
+                return all_data["error"]
             
             current_room_data = None
             for room in all_data.get("rooms", []):
@@ -380,24 +401,24 @@ def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, ca
             if not current_room_data or "lights" not in current_room_data or len(current_room_data["lights"]) < light_num:
                 return f"Could not find light {light_num} data for room: {entity_name}. Ensure it exists and has light data."
 
-            # Read boolean directly from MERN response
+            # Read boolean directly from MERN response (True/False)
             current_light_status_bool = current_room_data["lights"][light_num - 1]
             current_light_status_str = "on" if current_light_status_bool else "off"
             
             logger.info(f"Light {light_num} in {entity_name} current state: {current_light_status_str}. Desired state: {desired_power_state}")
 
             # 2. Compare desired state with current state
-            if desired_power_state: # If user specified "on" or "off"
+            if desired_power_state:
                 if desired_power_state == current_light_status_str:
                     return f"Light {light_num} in the {entity_name} is already {current_light_status_str}."
             
             # Proceed with toggle if no desired state, or if desired state doesn't match current
             payload = {
                 "room_name": entity_name,
-                "light_num": light_num-1
+                "light_num": light_num - 1 # **FIXED: Adjusted to 0-indexed for MERN API payload**
             }
             api_endpoint = f"{EXTERNAL_API_BASE_URL}/toggle/lights"
-            logger.info(f"Sending toggle request for light {light_num} in {entity_name}: {payload} to {api_endpoint}")
+            logger.info(f"Sending toggle request for light {light_num} (payload index: {payload['light_num']}) in {entity_name}: {payload} to {api_endpoint}")
             response = requests.post(api_endpoint, headers=headers, json=payload)
             response.raise_for_status()
             result = response.json()
@@ -419,7 +440,7 @@ def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, ca
             # 1. Fetch current machine data to get its power status
             all_data = _fetch_all_external_data_internal()
             if isinstance(all_data, dict) and "error" in all_data:
-                return all_data["error"] # Return the error message directly
+                return all_data["error"]
             
             current_machine_data = None
             for machine in all_data.get("machines", []):
@@ -435,7 +456,7 @@ def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, ca
             logger.info(f"Machine {entity_name} current power state: {current_power_status_str}. Desired state: {desired_power_state}")
 
             # 2. Compare desired state with current state
-            if desired_power_state: # If user specified "on" or "off"
+            if desired_power_state:
                 if desired_power_state == current_power_status_str:
                     return f"The {entity_name} is already {current_power_status_str}."
             
@@ -486,19 +507,16 @@ def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, ca
 
     except requests.exceptions.HTTPError as e:
         logger.error(f"HTTP error performing action for {intent}: {e.response.status_code} - {e.response.text}")
-        # Log the full response text from the MERN API for debugging HTML errors
         logger.error(f"MERN API Response Text (HTTPError): {e.response.text}") 
         if e.response.status_code == 401 or e.response.status_code == 403:
             return "Authentication failed. Please ensure you are logged in."
         elif e.response.status_code == 400:
-            # Attempt to parse as JSON if it's a 400, but fallback to text
             try:
                 error_json = e.response.json()
                 return f"Bad request: {error_json.get('error', e.response.text)}"
             except json.JSONDecodeError:
                 return f"Bad request: {e.response.text}"
         elif e.response.status_code == 404:
-            # Attempt to parse as JSON if it's a 404, but fallback to text
             try:
                 error_json = e.response.json()
                 return f"Entity not found: {error_json.get('error', e.response.text)}"
@@ -507,7 +525,6 @@ def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, ca
         return f"Failed to perform action due to a server error: {e.response.text}"
     except (json.JSONDecodeError, IndexError, KeyError) as e:
         logger.error(f"Error parsing MERN API response or unexpected format: {e}")
-        # Log the full response text if JSON decoding failed
         if 'response' in locals() and hasattr(response, 'text'):
             logger.error(f"MERN API Response Text (JSONDecodeError): {response.text}")
         return "An unexpected error occurred while trying to process the response from the factory system."
@@ -516,22 +533,27 @@ def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, ca
         return "An unexpected error occurred while trying to perform that action."
 
 
-def text_to_speech(text):
+def text_to_speech(text, lang='en'):
     try:
         ts = int(time.time() * 1000)
         filename = f"static/response_{ts}.mp3"
-        gTTS(text).save(filename)
+        gTTS(text, lang=lang).save(filename) 
         return filename
     except Exception as e:
-        logger.error("TTS error: %s", e)
-        return None
+        logger.error(f"TTS error for language '{lang}': {e}")
+        try:
+            filename = f"static/response_{ts}_en_fallback.mp3"
+            gTTS(text, lang='en').save(filename)
+            return filename
+        except Exception as fallback_e:
+            logger.error(f"TTS fallback to English failed: {fallback_e}")
+            return None
 
 def cleanup_audio_files():
     for f in glob.glob("static/response_*.mp3"):
         try:
-            # Only remove files older than, say, 1 hour
             file_mod_time = datetime.fromtimestamp(os.path.getmtime(f))
-            if datetime.now() - file_mod_time > timedelta(hours=1): # Clean up older files
+            if datetime.now() - file_mod_time > timedelta(hours=1):
                 os.remove(f)
         except Exception as e:
             logger.error(f"Error removing audio file {f}: {e}")
@@ -556,8 +578,9 @@ def transcribe():
         model = get_whisper_model()
         segments, info = model.transcribe(path)
         transcribed_text = " ".join([segment.text for segment in segments])
+        detected_language = info.language
         
-        return jsonify({"text": transcribed_text})
+        return jsonify({"text": transcribed_text, "language": detected_language})
     except Exception as e:
         logger.error(f"Transcription error: {e}")
         return jsonify({"error": str(e)}), 500
@@ -566,24 +589,22 @@ def transcribe():
             os.remove(path)
 
 @app.route("/process_command", methods=["POST"])
-# REMOVED 'async' from here
 def process_command():
-    text = request.get_json().get("text", "")
+    request_data = request.get_json()
+    text = request_data.get("text", "")
+    input_language = request_data.get("language", None) 
     user_auth_token = request.headers.get('Authorization', '').replace('Bearer ', '')
 
-    logger.info(f"Processing command: {text}")
+    logger.info(f"Processing command: '{text}' in language: {input_language}")
     logger.info(f"Received user_auth_token: {'Present' if user_auth_token else 'Absent'}")
     
-    # Parse command using LLM, returns all extracted parameters including desired_power_state
     intent, entity_name, entity_type, light_num, cartons_sold, cartons_produced, buyer, desired_power_state = parse_command(text) 
     
     response_text = "I'm sorry, I couldn't understand your command or extract enough information."
 
-    # --- Handle Greetings First ---
     if intent == "greeting":
-        # Generate audio for greeting and return
         greeting_response = "Hello there! How can I assist you with the factory today?"
-        audio_file = text_to_speech(greeting_response)
+        audio_file = text_to_speech(greeting_response, lang=input_language if input_language else 'en')
         audio_name = os.path.basename(audio_file) if audio_file else None 
         return jsonify({
             "response": greeting_response,
@@ -595,15 +616,12 @@ def process_command():
         action_intents = ["toggle_lights", "toggle_machine_power", "record_sale", "record_cartons"]
         
         if intent in action_intents:
-            # Pass the user_auth_token and desired_power_state to the perform_action function
-            # REMOVED 'await' from here
             response_text = perform_action(intent, entity_name, entity_type, light_num, cartons_sold, cartons_produced, buyer, user_auth_token, desired_power_state)
         else:
-            # DO NOT pass the user_auth_token to the get_sensor_data function
             response_text = get_sensor_data(intent, entity_name, entity_type)
         
         logger.info(f"Generated response: {response_text}")
-        audio_file = text_to_speech(response_text)
+        audio_file = text_to_speech(response_text, lang=input_language if input_language else 'en')
         audio_name = os.path.basename(audio_file) if audio_file else None 
         return jsonify({
             "response": response_text,
@@ -611,7 +629,14 @@ def process_command():
             "audio_url": f"/audio/{audio_name}" if audio_name else None
         })
     logger.warning(f"Could not understand command: {text}")
-    return jsonify({"error": f"Could not understand: {text}"}), 400
+    could_not_understand_response = f"I'm sorry, I couldn't understand: {text}"
+    audio_file = text_to_speech(could_not_understand_response, lang=input_language if input_language else 'en')
+    audio_name = os.path.basename(audio_file) if audio_file else None
+    return jsonify({
+        "error": could_not_understand_response,
+        "audio_filename": audio_name,
+        "audio_url": f"/audio/{audio_name}" if audio_name else None
+    }), 400
 
 
 @app.route("/audio/<filename>", methods=["GET"])
@@ -627,6 +652,4 @@ if __name__ == "__main__":
     logger.info(f"Starting Flask app on port {port}")
     app.run(host="0.0.0.0", port=port)
 
-# THIS LINE MUST BE OUTSIDE the `if __name__ == "__main__":` block
-# Uvicorn will import `app.py` and look for `asgi_app` directly.
 asgi_app = WsgiToAsgi(app)
