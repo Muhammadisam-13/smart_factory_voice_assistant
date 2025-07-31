@@ -298,9 +298,7 @@ def get_sensor_data(intent, entity_name, entity_type):
                 return f"No machines found that are currently {display_name}."
             
             if entity_name and matching_machines: # If specific entity was asked and found
-                if display_name != "Normal Operation":
-                    return f"The {entity_name} has a {display_name}."
-                else: return f"The {entity_name} is operating normally."
+                return f"The {entity_name} is currently {display_name}."
             
             # General query, and machines found
             return f"The machines currently {display_name} are: {', '.join(matching_machines)}."
@@ -337,7 +335,7 @@ def get_sensor_data(intent, entity_name, entity_type):
                     # Read boolean directly from MERN, then convert for display
                     current_light_state_bool = target_entity["lights"][light_num-1]
                     current_light_states = [light_statuses[int(l)] for l in target_entity["lights"]]
-                    return f"The lights in the {target_entity['name']} are currently light one is {current_light_states[0]} and light two is {current_light_states[1]}."
+                    return f"In the {target_entity['name']}, light one is {current_light_states[0]} and light two is {current_light_states[1]}."
                 else:
                     return f"The {intent.replace('_', ' ')} of the {target_entity['name']} is {target_entity[field_name]} {unit}."
         return f"No {intent.replace('_', ' ')} data found for {target_entity['name']}."
