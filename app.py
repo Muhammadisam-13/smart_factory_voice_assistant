@@ -88,7 +88,8 @@ def _fetch_all_external_data_internal():
         return {"error": "Error parsing data from factory system."}
 
 # --- parse_command using Gemini LLM (Expanded for Actions and parameters) ---
-def parse_command(text):
+# Added response_language parameter
+def parse_command(text, response_language=None):
     if not GEMINI_API_KEY:
         logger.error("GEMINI_API_KEY environment variable not set.")
         return None, None, None, None, None, None, None, None
@@ -97,12 +98,22 @@ def parse_command(text):
     machine_names = config_data.get("entities", {}).get("machines", [])
     room_names = config_data.get("entities", {}).get("rooms", [])
     
-    # Define all possible intents from config - ADDED "get_machine_status"
+    # Define all possible intents from config
     possible_intents = list(config_data.get("field_mappings", {}).keys()) + \
                        list(config_data.get("maintenance_status_map", {}).keys()) + \
                        ["toggle_lights", "toggle_machine_power", "record_sale", "record_cartons", "greeting", "alerts", "get_machine_status"]
     
+    # Dynamic language instruction for Gemini
+    language_instruction = ""
+    if response_language and response_language != 'en':
+        # Instruct Gemini to respond in the detected language if not English
+        language_instruction = f"Your response should be in {response_language} language. If you cannot respond in {response_language}, respond in English."
+    else:
+        # Default to English if no specific language is detected or if it's English
+        language_instruction = "Your response should be in English."
+
     prompt = f"""
+    {language_instruction}
     You are an advanced AI assistant for a smart factory. Your primary function is to accurately parse natural language commands from users to identify their core intent and any specific factory entity (machine or room) they are referring to, as well as any numerical or specific string parameters required for actions.
 
     **Constraints & Output Format:**
@@ -240,7 +251,7 @@ maintenance_status_map = config_data.get("maintenance_status_map", {})
 
 # New mapping for user-friendly maintenance status descriptions
 MAINTENANCE_DISPLAY_NAMES = {
-    "Normal Operation": "operating normally", # **FIXED: Key now matches database string exactly**
+    "Normal Operation": "operating normally",
     "not_normal": "not operating normally",
     "clogged_filter": "having a clogged filter",
     "bearing_wear": "experiencing bearing wear",
@@ -285,9 +296,7 @@ def get_sensor_data(intent, entity_name, entity_type):
             if target_machine and "maintenance" in target_machine:
                 actual_maintenance_status = target_machine["maintenance"]
                 display_name = MAINTENANCE_DISPLAY_NAMES.get(actual_maintenance_status, actual_maintenance_status.replace('_', ' '))
-                if actual_maintenance_status != "Normal Operation":
-                    return f"The {entity_name} has a {display_name}."
-                else: return f"The {entity_name} is operating normally."
+                return f"The {entity_name} is currently {display_name}."
             else:
                 return f"Could not find maintenance data for {entity_name}."
         else:
@@ -302,7 +311,7 @@ def get_sensor_data(intent, entity_name, entity_type):
 
         if intent == "alerts":
             for machine in machines_data:
-                if machine.get("maintenance") != "Normal Operation": # **FIXED: Compare against exact database string**
+                if machine.get("maintenance") != "Normal Operation": # Corrected comparison
                     matching_machines.append(machine["name"])
             if not matching_machines:
                 return "There are no machines currently reporting alerts or abnormal status."
@@ -535,14 +544,18 @@ def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, ca
         return "An unexpected error occurred while trying to perform that action."
 
 
-def text_to_speech(text, lang='en'):
+# Modified to accept a language parameter
+def text_to_speech(text, lang='en'): # Default to 'en'
     try:
         ts = int(time.time() * 1000)
         filename = f"static/response_{ts}.mp3"
+        # gTTS will try to auto-detect if lang is not provided or invalid, but explicit is better
+        # For 'hi' (Hindi) and 'ur' (Urdu) specifically, gTTS supports them.
         gTTS(text, lang=lang).save(filename) 
         return filename
     except Exception as e:
         logger.error(f"TTS error for language '{lang}': {e}")
+        # Fallback to English if the specific language fails
         try:
             filename = f"static/response_{ts}_en_fallback.mp3"
             gTTS(text, lang='en').save(filename)
@@ -580,9 +593,9 @@ def transcribe():
         model = get_whisper_model()
         segments, info = model.transcribe(path)
         transcribed_text = " ".join([segment.text for segment in segments])
-        detected_language = info.language
+        detected_language = info.language # Extract detected language
         
-        return jsonify({"text": transcribed_text, "language": detected_language})
+        return jsonify({"text": transcribed_text, "language": detected_language}) # Return language
     except Exception as e:
         logger.error(f"Transcription error: {e}")
         return jsonify({"error": str(e)}), 500
@@ -594,19 +607,22 @@ def transcribe():
 def process_command():
     request_data = request.get_json()
     text = request_data.get("text", "")
+    # Get language from request (sent by frontend for voice input, or None for text input)
     input_language = request_data.get("language", None) 
     user_auth_token = request.headers.get('Authorization', '').replace('Bearer ', '')
 
     logger.info(f"Processing command: '{text}' in language: {input_language}")
     logger.info(f"Received user_auth_token: {'Present' if user_auth_token else 'Absent'}")
     
-    intent, entity_name, entity_type, light_num, cartons_sold, cartons_produced, buyer, desired_power_state = parse_command(text) 
+    # Pass input_language to parse_command so Gemini can be instructed
+    intent, entity_name, entity_type, light_num, cartons_sold, cartons_produced, buyer, desired_power_state = parse_command(text, input_language) 
     
     response_text = "I'm sorry, I couldn't understand your command or extract enough information."
 
     if intent == "greeting":
         greeting_response = "Hello there! How can I assist you with the factory today?"
-        audio_file = text_to_speech(greeting_response, lang=input_language if input_language else 'en')
+        # Use detected language for TTS
+        audio_file = text_to_speech(greeting_response, lang=input_language if input_language else 'en') 
         audio_name = os.path.basename(audio_file) if audio_file else None 
         return jsonify({
             "response": greeting_response,
@@ -623,7 +639,8 @@ def process_command():
             response_text = get_sensor_data(intent, entity_name, entity_type)
         
         logger.info(f"Generated response: {response_text}")
-        audio_file = text_to_speech(response_text, lang=input_language if input_language else 'en')
+        # Use detected language for TTS
+        audio_file = text_to_speech(response_text, lang=input_language if input_language else 'en') 
         audio_name = os.path.basename(audio_file) if audio_file else None 
         return jsonify({
             "response": response_text,
@@ -632,6 +649,7 @@ def process_command():
         })
     logger.warning(f"Could not understand command: {text}")
     could_not_understand_response = f"I'm sorry, I couldn't understand: {text}"
+    # Use detected language for "could not understand" response as well
     audio_file = text_to_speech(could_not_understand_response, lang=input_language if input_language else 'en')
     audio_name = os.path.basename(audio_file) if audio_file else None
     return jsonify({
