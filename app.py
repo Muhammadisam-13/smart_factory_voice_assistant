@@ -105,12 +105,11 @@ def parse_command(text, response_language=None):
     
     # Dynamic language instruction for Gemini
     language_instruction = ""
-    if response_language and response_language != 'en':
-        # Instruct Gemini to respond in the detected language if not English
+    if response_language: # If Whisper detected a language (voice input)
         language_instruction = f"Your response should be in {response_language} language. If you cannot respond in {response_language}, respond in English."
-    else:
-        # Default to English if no specific language is detected or if it's English
-        language_instruction = "Your response should be in English."
+    else: # For text input where no language is explicitly detected by Whisper
+        # Instruct Gemini to respond in the same language as the user's query
+        language_instruction = "Your response should be in the same language as the user's query if possible, otherwise respond in English."
 
     prompt = f"""
     {language_instruction}
@@ -426,7 +425,7 @@ def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, ca
             # Proceed with toggle if no desired state, or if desired state doesn't match current
             payload = {
                 "room_name": entity_name,
-                "light_num": light_num - 1 # **FIXED: Adjusted to 0-indexed for MERN API payload**
+                "light_num": light_num - 1 # Adjusted to 0-indexed for MERN API payload
             }
             api_endpoint = f"{EXTERNAL_API_BASE_URL}/toggle/lights"
             logger.info(f"Sending toggle request for light {light_num} (payload index: {payload['light_num']}) in {entity_name}: {payload} to {api_endpoint}")
