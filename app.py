@@ -298,7 +298,9 @@ def get_sensor_data(intent, entity_name, entity_type):
                 return f"No machines found that are currently {display_name}."
             
             if entity_name and matching_machines: # If specific entity was asked and found
-                return f"The {entity_name} is currently {display_name}."
+                if display_name != "Normal Operation":
+                    return f"The {entity_name} has a {display_name}."
+                else: return f"The {entity_name} is operating normally."
             
             # General query, and machines found
             return f"The machines currently {display_name} are: {', '.join(matching_machines)}."
