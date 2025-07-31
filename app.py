@@ -338,11 +338,11 @@ def get_sensor_data(intent, entity_name, entity_type):
                     return f"In the {target_entity['name']}, light one is {current_light_states[0]} and light two is {current_light_states[1]}."
                 else:
                     return f"The {intent.replace('_', ' ')} of the {target_entity['name']} is {target_entity[field_name]} {unit}."
-        return f"No {intent.replace('_', ' ')} data found for {target_entity['name']}."
+        return f"No {intent.replace('_', ' ')} data found."
     
     # Fallback for general data queries if entity_name is None or entity not found
     if entity_name: # If an entity was specified but not found
-        return f"No data found for {entity_name}."
+        return f"No data found."
     # If no specific entity was mentioned and no other intent matched
     return "I couldn't find specific data for that request."
 
