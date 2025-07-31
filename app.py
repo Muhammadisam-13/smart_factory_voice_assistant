@@ -546,20 +546,20 @@ def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, ca
 
 
 # Modified to accept a language parameter
-def text_to_speech(text, lang='en'): # Default to 'en'
+def text_to_speech(text, lang='hi'): # Default to 'en'
     try:
         ts = int(time.time() * 1000)
         filename = f"static/response_{ts}.mp3"
         # gTTS will try to auto-detect if lang is not provided or invalid, but explicit is better
         # For 'hi' (Hindi) and 'ur' (Urdu) specifically, gTTS supports them.
-        gTTS(text, lang=lang).save(filename) 
+        gTTS(text, lang=hi).save(filename) 
         return filename
     except Exception as e:
         logger.error(f"TTS error for language '{lang}': {e}")
         # Fallback to English if the specific language fails
         try:
             filename = f"static/response_{ts}_en_fallback.mp3"
-            gTTS(text, lang='en').save(filename)
+            gTTS(text, lang='hi').save(filename)
             return filename
         except Exception as fallback_e:
             logger.error(f"TTS fallback to English failed: {fallback_e}")
