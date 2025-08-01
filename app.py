@@ -602,7 +602,7 @@ def transcribe():
             try:
                 detected_language = detect(transcribed_text)
             except:
-                detected_language = 'en'  # fallback
+                detected_language = 'ur'  # fallback
 
         
         return jsonify({"text": transcribed_text, "language": detected_language}) # Return language
