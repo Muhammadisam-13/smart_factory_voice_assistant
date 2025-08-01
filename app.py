@@ -107,10 +107,10 @@ def parse_command(text, response_language=None):
     # Dynamic language instruction for Gemini
     language_instruction = ""
     if response_language:
-    language_instruction = f"""
-    You must respond in {response_language}. Avoid English unless the user command was in English.
-    Your tone and phrasing should match how a native speaker of {response_language} would naturally say it.
-    """
+        language_instruction = f"""
+        You must respond in {response_language}. Avoid English unless the user command was in English.
+        Your tone and phrasing should match how a native speaker of {response_language} would naturally say it.
+        """
 
     else: # For text input where no language is explicitly detected by Whisper
         # Instruct Gemini to respond in the same language as the user's query
