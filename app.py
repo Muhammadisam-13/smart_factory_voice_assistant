@@ -3,7 +3,6 @@ from flask import Flask, request, send_file, jsonify
 from flask_cors import CORS
 from faster_whisper import WhisperModel
 from pymongo import MongoClient
-from gtts import gTTS
 import os
 import glob
 import atexit
@@ -13,6 +12,9 @@ import requests
 import json
 from dotenv import load_dotenv
 from asgiref.wsgi import WsgiToAsgi
+import wave
+import base64
+import struct
 # Import the language detection library
 from langdetect import detect, LangDetectException
 
@@ -66,7 +68,8 @@ EXTERNAL_API_BASE_URL = "https://model-deployed-production.up.railway.app"
 
 # Gemini API Configuration
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+GEMINI_LLM_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+GEMINI_TTS_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent"
 
 # Helper function to fetch data from the external API (GET /data/all)
 def _fetch_all_external_data_internal():
@@ -214,15 +217,15 @@ def parse_command(text, response_language=None):
     }
 
     try:
-        logger.debug(f"Gemini Language Instruction: {language_instruction}") # NEW DEBUG LOG
+        logger.debug(f"Gemini Language Instruction: {language_instruction}")
         logger.info(f"Sending prompt to Gemini API for text: '{text}'")
-        response = requests.post(f"{GEMINI_API_URL}?key={GEMINI_API_KEY}", headers=headers, json=payload)
+        response = requests.post(f"{GEMINI_LLM_URL}?key={GEMINI_API_KEY}", headers=headers, json=payload)
         response.raise_for_status()
 
         gemini_response = response.json()
 
         llm_output_text = gemini_response.get("candidates", [])[0].get("content", {}).get("parts", [])[0].get("text", "{}")
-        logger.debug(f"Raw Gemini LLM Output Text: {llm_output_text}") # NEW DEBUG LOG
+        logger.debug(f"Raw Gemini LLM Output Text: {llm_output_text}")
 
         parsed_llm_output = json.loads(llm_output_text)
 
@@ -546,29 +549,79 @@ def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, ca
         logger.error(f"Unexpected error performing action for {intent}: {e}")
         return "An unexpected error occurred while trying to perform that action."
 
+# Helper function to convert raw PCM to WAV format
+def pcm_to_wav(pcm_data, sample_rate=16000, channels=1, bit_depth=16):
+    wav_file = wave.open("temp_audio.wav", 'wb')
+    wav_file.setnchannels(channels)
+    wav_file.setsampwidth(bit_depth // 8)
+    wav_file.setframerate(sample_rate)
+    wav_file.writeframes(pcm_data)
+    wav_file.close()
+    return "temp_audio.wav"
 
-# Modified to accept a language parameter
-def text_to_speech(text, lang='en'): # Default to 'en'
+# NEW: Use Gemini TTS for a more robust multilingual experience
+def text_to_speech(text, lang_code='en'):
+    # The Gemini API will automatically use the correct voice for the language
+    # No need to manually specify a voice name here
+    payload = {
+        "contents": [{
+            "parts": [{"text": text}]
+        }],
+        "generationConfig": {
+            "responseModalities": ["AUDIO"],
+            "speechConfig": {
+                "voiceConfig": {
+                    "prebuiltVoiceConfig": {
+                        # We can specify a voice, but it's best to let Gemini handle it
+                        # based on the language of the prompt.
+                        # We can add more specific voice options later if needed.
+                        "voiceName": "Kore"
+                    }
+                }
+            }
+        },
+        "model": "gemini-2.5-flash-preview-tts"
+    }
+
+    headers = {
+        'Content-Type': 'application/json'
+    }
+
     try:
         ts = int(time.time() * 1000)
-        filename = f"static/response_{ts}.mp3"
-        # gTTS will try to auto-detect if lang is not provided or invalid, but explicit is better
-        # For 'hi' (Hindi) and 'ur' (Urdu) specifically, gTTS supports them.
-        gTTS(text, lang=lang).save(filename)
-        return filename
-    except Exception as e:
-        logger.error(f"TTS error for language '{lang}': {e}")
-        # Fallback to English if the specific language fails
-        try:
-            filename = f"static/response_{ts}_en_fallback.mp3"
-            gTTS(text, lang='en').save(filename)
-            return filename
-        except Exception as fallback_e:
-            logger.error(f"TTS fallback to English failed: {fallback_e}")
+        filename = f"static/response_{ts}.wav"
+        
+        logger.info(f"Generating TTS audio for text: '{text}' using Gemini TTS API...")
+        response = requests.post(f"{GEMINI_TTS_URL}?key={GEMINI_API_KEY}", headers=headers, json=payload, timeout=30)
+        response.raise_for_status()
+        
+        result = response.json()
+        audio_data_base64 = result.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('inlineData', {}).get('data')
+
+        if not audio_data_base64:
+            logger.error("Gemini TTS API returned no audio data.")
             return None
+        
+        audio_data_pcm = base64.b64decode(audio_data_base64)
+        
+        # Write PCM data to a temporary WAV file
+        with wave.open(filename, 'wb') as wav_file:
+            wav_file.setnchannels(1)  # Mono
+            wav_file.setsampwidth(2)  # 16-bit
+            wav_file.setframerate(16000) # 16kHz
+            wav_file.writeframes(audio_data_pcm)
+
+        return filename
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error calling Gemini TTS API: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"An error occurred during TTS generation: {e}")
+        return None
 
 def cleanup_audio_files():
-    for f in glob.glob("static/response_*.mp3"):
+    for f in glob.glob("static/response_*.wav"):
         try:
             file_mod_time = datetime.fromtimestamp(os.path.getmtime(f))
             if datetime.now() - file_mod_time > timedelta(hours=1):
@@ -636,7 +689,7 @@ def process_command():
     if intent == "greeting":
         greeting_response = "Hello there! How can I assist you with the factory today?"
         # Use detected language for TTS
-        audio_file = text_to_speech(greeting_response, lang=input_language if input_language else 'en')
+        audio_file = text_to_speech(greeting_response, lang_code=input_language if input_language else 'en')
         audio_name = os.path.basename(audio_file) if audio_file else None
         return jsonify({
             "response": greeting_response,
@@ -654,7 +707,7 @@ def process_command():
 
         logger.info(f"Generated response: {response_text}")
         # Use detected language for TTS
-        audio_file = text_to_speech(response_text, lang=input_language if input_language else 'en')
+        audio_file = text_to_speech(response_text, lang_code=input_language if input_language else 'en')
         audio_name = os.path.basename(audio_file) if audio_file else None
         return jsonify({
             "response": response_text,
@@ -664,7 +717,7 @@ def process_command():
     logger.warning(f"Could not understand command: {text}")
     could_not_understand_response = f"I'm sorry, I couldn't understand: {text}"
     # Use detected language for "could not understand" response as well
-    audio_file = text_to_speech(could_not_understand_response, lang=input_language if input_language else 'en')
+    audio_file = text_to_speech(could_not_understand_response, lang_code=input_language if input_language else 'en')
     audio_name = os.path.basename(audio_file) if audio_file else None
     return jsonify({
         "error": could_not_understand_response,
@@ -676,7 +729,7 @@ def process_command():
 @app.route("/audio/<filename>", methods=["GET"])
 def serve_audio(filename):
     try:
-        return send_file(os.path.join("static", filename), mimetype="audio/mpeg")
+        return send_file(os.path.join("static", filename), mimetype="audio/wav")
     except FileNotFoundError:
         logger.error(f"Audio file not found: {filename}")
         return jsonify({"error": "File not found"}), 404
