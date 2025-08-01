@@ -12,7 +12,6 @@ from datetime import datetime, timedelta
 import requests
 import json
 from dotenv import load_dotenv
-from googletrans import Translator
 from asgiref.wsgi import WsgiToAsgi
 
 # Setup logging
@@ -107,7 +106,7 @@ def parse_command(text, response_language=None):
     # Dynamic language instruction for Gemini
     language_instruction = ""
     if response_language: # If Whisper detected a language (voice input)
-        language_instruction = f"""\n    You must respond in {response_language}. Avoid English unless the user command was in English.\n    Your tone and phrasing should match how a native speaker of {response_language} would naturally say it.\n    """
+        language_instruction = f"Your response should be in {response_language} language. If you cannot respond in {response_language}, respond in English."
     else: # For text input where no language is explicitly detected by Whisper
         # Instruct Gemini to respond in the same language as the user's query
         language_instruction = "Your response should be in the same language as the user's query if possible, otherwise respond in English."
@@ -566,25 +565,6 @@ def text_to_speech(text, lang='en'): # Default to 'en'
             logger.error(f"TTS fallback to English failed: {fallback_e}")
             return None
 
-
-translator = Translator()
-
-lang_map = {
-    "ur": "ur",
-    "hi": "hi",
-    "en": "en",
-    "ur-PK": "ur",
-    "hi-IN": "hi"
-}
-
-def translate_text(text, dest_lang):
-    try:
-        translated = translator.translate(text, dest=dest_lang)
-        return translated.text
-    except Exception as e:
-        logger.error(f"Translation failed: {e}")
-        return text
-
 def cleanup_audio_files():
     for f in glob.glob("static/response_*.mp3"):
         try:
@@ -643,10 +623,6 @@ def process_command():
     if intent == "greeting":
         greeting_response = "Hello there! How can I assist you with the factory today?"
         # Use detected language for TTS
-    tts_lang = lang_map.get(input_language, 'en') if input_language else 'en'
-    if tts_lang != 'en':
-        greeting_response = translate_text(greeting_response, tts_lang)
-        logger.info(f"[TRANSLATED GREETING] {greeting_response}")
         audio_file = text_to_speech(greeting_response, lang=input_language if input_language else 'en') 
         audio_name = os.path.basename(audio_file) if audio_file else None 
         return jsonify({
@@ -663,10 +639,6 @@ def process_command():
         else:
             response_text = get_sensor_data(intent, entity_name, entity_type)
         
-        tts_lang = lang_map.get(input_language, 'en') if input_language else 'en'
-        if tts_lang != 'en':
-            response_text = translate_text(response_text, tts_lang)
-        logger.info(f"[TRANSLATED TEXT] {response_text}")
         logger.info(f"Generated response: {response_text}")
         # Use detected language for TTS
         audio_file = text_to_speech(response_text, lang=input_language if input_language else 'en') 
@@ -679,11 +651,7 @@ def process_command():
     logger.warning(f"Could not understand command: {text}")
     could_not_understand_response = f"I'm sorry, I couldn't understand: {text}"
     # Use detected language for "could not understand" response as well
-    tts_lang = lang_map.get(input_language, 'en') if input_language else 'en'
-    if tts_lang != 'en':
-        could_not_understand_response = translate_text(could_not_understand_response, tts_lang)
-    logger.info(f"[TRANSLATED ERROR] {could_not_understand_response}")
-    audio_file = text_to_speech(could_not_understand_response, lang=tts_lang)
+    audio_file = text_to_speech(could_not_understand_response, lang=input_language if input_language else 'en')
     audio_name = os.path.basename(audio_file) if audio_file else None
     return jsonify({
         "error": could_not_understand_response,
