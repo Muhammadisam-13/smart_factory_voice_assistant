@@ -3,6 +3,7 @@ from flask import Flask, request, send_file, jsonify
 from flask_cors import CORS
 from faster_whisper import WhisperModel
 from pymongo import MongoClient
+from gtts import gTTS
 import os
 import glob
 import atexit
@@ -12,11 +13,6 @@ import requests
 import json
 from dotenv import load_dotenv
 from asgiref.wsgi import WsgiToAsgi
-import wave
-import base64
-import struct
-# Import the language detection library
-from langdetect import detect, LangDetectException
 
 # Setup logging
 logging.basicConfig(level=logging.DEBUG)
@@ -56,7 +52,7 @@ def get_whisper_model():
 try:
     MONGODB_URI = os.environ.get("MONGODB_URI", "mongodb+srv://factory:1234@cluster0.t2zyjyl.mongodb.net/SmartFactory")
     client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
-    db = client["SmartFactory"]
+    db = client["SmartFactory"] 
     analytics = db["analytics"]
     client.server_info()
     logger.info("MongoDB connection successful.")
@@ -64,21 +60,20 @@ except Exception as e:
     logger.error("MongoDB connection failed: %s", e)
 
 # External MERN API Configuration
-EXTERNAL_API_BASE_URL = "https://model-deployed-production.up.railway.app"
+EXTERNAL_API_BASE_URL = "https://model-deployed-production.up.railway.app" 
 
 # Gemini API Configuration
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-GEMINI_LLM_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
-GEMINI_TTS_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent"
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 
 # Helper function to fetch data from the external API (GET /data/all)
 def _fetch_all_external_data_internal():
     external_api_url = f"{EXTERNAL_API_BASE_URL}/data/all"
-
+    
     try:
         logger.info(f"Fetching data from external API: {external_api_url} (no auth required for this endpoint)")
-        response = requests.get(external_api_url)
-        response.raise_for_status()
+        response = requests.get(external_api_url) 
+        response.raise_for_status() 
         data = response.json()
         logger.info("Successfully fetched data from external API.")
         return data
@@ -102,12 +97,12 @@ def parse_command(text, response_language=None):
     # Get entities from config for the prompt
     machine_names = config_data.get("entities", {}).get("machines", [])
     room_names = config_data.get("entities", {}).get("rooms", [])
-
+    
     # Define all possible intents from config
     possible_intents = list(config_data.get("field_mappings", {}).keys()) + \
                        list(config_data.get("maintenance_status_map", {}).keys()) + \
                        ["toggle_lights", "toggle_machine_power", "record_sale", "record_cartons", "greeting", "alerts", "get_machine_status"]
-
+    
     # Dynamic language instruction for Gemini
     language_instruction = ""
     if response_language: # If Whisper detected a language (voice input)
@@ -178,7 +173,7 @@ def parse_command(text, response_language=None):
 
     11. User: "Are there any alerts?"
         Output: {{"intent": "alerts", "entity_name": null, "entity_type": null, "light_num": null, "cartons_sold": null, "cartons_produced": null, "buyer": null, "desired_power_state": null}}
-
+    
     12. User: "What is the status of the Encapsulator?"
         Output: {{"intent": "get_machine_status", "entity_name": "Encapsulator", "entity_type": "machine", "light_num": null, "cartons_sold": null, "cartons_produced": null, "buyer": null, "desired_power_state": null}}
     ---
@@ -217,16 +212,16 @@ def parse_command(text, response_language=None):
     }
 
     try:
-        logger.debug(f"Gemini Language Instruction: {language_instruction}")
+        logger.debug(f"Gemini Language Instruction: {language_instruction}") # NEW DEBUG LOG
         logger.info(f"Sending prompt to Gemini API for text: '{text}'")
-        response = requests.post(f"{GEMINI_LLM_URL}?key={GEMINI_API_KEY}", headers=headers, json=payload)
+        response = requests.post(f"{GEMINI_API_URL}?key={GEMINI_API_KEY}", headers=headers, json=payload)
         response.raise_for_status()
-
+        
         gemini_response = response.json()
-
+        
         llm_output_text = gemini_response.get("candidates", [])[0].get("content", {}).get("parts", [])[0].get("text", "{}")
-        logger.debug(f"Raw Gemini LLM Output Text: {llm_output_text}")
-
+        logger.debug(f"Raw Gemini LLM Output Text: {llm_output_text}") # NEW DEBUG LOG
+        
         parsed_llm_output = json.loads(llm_output_text)
 
         intent = parsed_llm_output.get("intent")
@@ -237,7 +232,7 @@ def parse_command(text, response_language=None):
         cartons_produced = parsed_llm_output.get("cartons_produced")
         buyer = parsed_llm_output.get("buyer")
         desired_power_state = parsed_llm_output.get("desired_power_state")
-
+        
         if entity_name:
             entity_name = entity_name.title()
 
@@ -268,7 +263,7 @@ MAINTENANCE_DISPLAY_NAMES = {
 def get_sensor_data(intent, entity_name, entity_type):
     # Fetch data from the external API first (no auth token passed here)
     all_data = _fetch_all_external_data_internal()
-
+    
     # Check if _fetch_all_external_data_internal returned an error dictionary
     if isinstance(all_data, dict) and "error" in all_data:
         return all_data["error"]
@@ -298,7 +293,7 @@ def get_sensor_data(intent, entity_name, entity_type):
                 if machine["name"].lower() == entity_name.lower():
                     target_machine = machine
                     break
-
+            
             if target_machine and "maintenance" in target_machine:
                 actual_maintenance_status = target_machine["maintenance"]
                 display_name = MAINTENANCE_DISPLAY_NAMES.get(actual_maintenance_status, actual_maintenance_status.replace('_', ' '))
@@ -313,7 +308,7 @@ def get_sensor_data(intent, entity_name, entity_type):
     # This block now primarily handles queries like "Which machines are [status]?"
     if intent in maintenance_status_map or intent == "alerts":
         matching_machines = []
-        target_maintenance_status = maintenance_status_map.get(intent, None)
+        target_maintenance_status = maintenance_status_map.get(intent, None) 
 
         if intent == "alerts":
             for machine in machines_data:
@@ -332,17 +327,17 @@ def get_sensor_data(intent, entity_name, entity_type):
                             matching_machines.append(machine["name"])
                     elif machine["maintenance"] == target_maintenance_status:
                         matching_machines.append(machine["name"])
-
-            display_name = MAINTENANCE_DISPLAY_NAMES.get(intent, intent.replace('_', ' '))
+            
+            display_name = MAINTENANCE_DISPLAY_NAMES.get(intent, intent.replace('_', ' ')) 
 
             if not matching_machines:
                 if entity_name: # This case should ideally be handled by "get_machine_status" now.
                     return f"The {entity_name} is not currently {display_name}."
                 return f"No machines found that are currently {display_name}."
-
+            
             if entity_name and matching_machines: # This case should ideally be handled by "get_machine_status" now.
                 return f"The {entity_name} is currently {display_name}."
-
+            
             return f"The machines currently {display_name} are: {', '.join(matching_machines)}."
 
 
@@ -351,7 +346,7 @@ def get_sensor_data(intent, entity_name, entity_type):
         return f"The total number of cartons produced is currently {cartons_num}."
     elif intent == "cartons_sold":
         return "I can tell you the total cartons, but not specifically cartons sold from this data."
-
+        
     # Handle specific sensor data requests (temperature, noise, humidity, smoke, vibration, power_usage, lights)
     target_entity = None
     if entity_type == "machine":
@@ -370,7 +365,7 @@ def get_sensor_data(intent, entity_name, entity_type):
         if field_info:
             field_name = field_info["field_name"]
             unit = field_info["unit"]
-
+            
             if field_name in target_entity:
                 if intent == "lights" and entity_type == "room":
                     light_statuses = ["off", "on"]
@@ -379,7 +374,7 @@ def get_sensor_data(intent, entity_name, entity_type):
                 else:
                     return f"The {intent.replace('_', ' ')} of the {target_entity['name']} is {target_entity[field_name]} {unit}."
         return f"No {intent.replace('_', ' ')} data found for {target_entity['name']}."
-
+    
     # Fallback for general data queries if entity_name is None or entity not found
     if entity_name:
         return f"No data found for {entity_name}."
@@ -396,39 +391,39 @@ def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, ca
         "Authorization": f"Bearer {user_auth_token}",
         "Content-Type": "application/json"
     }
-
+    
     try:
         if intent == "toggle_lights":
             if not entity_name or not entity_type == "room" or light_num is None:
                 return "I need a room name and the light number (1 or 2) to toggle lights."
             if light_num not in [1, 2]:
                 return "Light number must be 1 or 2."
-
+            
             # 1. Fetch current room data to get light status
             all_data = _fetch_all_external_data_internal()
             if isinstance(all_data, dict) and "error" in all_data:
                 return all_data["error"]
-
+            
             current_room_data = None
             for room in all_data.get("rooms", []):
                 if room["name"].lower() == entity_name.lower():
                     current_room_data = room
                     break
-
+            
             if not current_room_data or "lights" not in current_room_data or len(current_room_data["lights"]) < light_num:
                 return f"Could not find light {light_num} data for room: {entity_name}. Ensure it exists and has light data."
 
             # Read boolean directly from MERN response (True/False)
             current_light_status_bool = current_room_data["lights"][light_num - 1]
             current_light_status_str = "on" if current_light_status_bool else "off"
-
+            
             logger.info(f"Light {light_num} in {entity_name} current state: {current_light_status_str}. Desired state: {desired_power_state}")
 
             # 2. Compare desired state with current state
             if desired_power_state:
                 if desired_power_state == current_light_status_str:
                     return f"Light {light_num} in the {entity_name} is already {current_light_status_str}."
-
+            
             # Proceed with toggle if no desired state, or if desired state doesn't match current
             payload = {
                 "room_name": entity_name,
@@ -439,7 +434,7 @@ def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, ca
             response = requests.post(api_endpoint, headers=headers, json=payload)
             response.raise_for_status()
             result = response.json()
-
+            
             # Report the NEW state based on MERN's response
             if 'lights' in result and len(result['lights']) >= light_num:
                 new_light_state_bool = result['lights'][light_num - 1]
@@ -453,30 +448,30 @@ def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, ca
         elif intent == "toggle_machine_power":
             if not entity_name or not entity_type == "machine":
                 return "I need a machine name to toggle its power."
-
+            
             # 1. Fetch current machine data to get its power status
             all_data = _fetch_all_external_data_internal()
             if isinstance(all_data, dict) and "error" in all_data:
                 return all_data["error"]
-
+            
             current_machine_data = None
             for machine in all_data.get("machines", []):
                 if machine["name"].lower() == entity_name.lower():
                     current_machine_data = machine
                     break
-
+            
             if not current_machine_data:
                 return f"Could not find data for machine: {entity_name}."
 
             current_power_status_str = "on" if current_machine_data.get("power") else "off"
-
+            
             logger.info(f"Machine {entity_name} current power state: {current_power_status_str}. Desired state: {desired_power_state}")
 
             # 2. Compare desired state with current state
             if desired_power_state:
                 if desired_power_state == current_power_status_str:
                     return f"The {entity_name} is already {current_power_status_str}."
-
+            
             # Proceed with toggle if no desired state, or if desired state doesn't match current
             payload = {
                 "machine_name": entity_name
@@ -492,7 +487,7 @@ def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, ca
         elif intent == "record_sale":
             if cartons_sold is None or not isinstance(cartons_sold, int) or cartons_sold <= 0:
                 return "Please specify a valid number of cartons sold."
-
+            
             payload = {
                 "cartons_sold": cartons_sold,
                 "DateTime": datetime.now().isoformat(),
@@ -524,7 +519,7 @@ def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, ca
 
     except requests.exceptions.HTTPError as e:
         logger.error(f"HTTP error performing action for {intent}: {e.response.status_code} - {e.response.text}")
-        logger.error(f"MERN API Response Text (HTTPError): {e.response.text}")
+        logger.error(f"MERN API Response Text (HTTPError): {e.response.text}") 
         if e.response.status_code == 401 or e.response.status_code == 403:
             return "Authentication failed. Please ensure you are logged in."
         elif e.response.status_code == 400:
@@ -549,79 +544,29 @@ def perform_action(intent, entity_name, entity_type, light_num, cartons_sold, ca
         logger.error(f"Unexpected error performing action for {intent}: {e}")
         return "An unexpected error occurred while trying to perform that action."
 
-# Helper function to convert raw PCM to WAV format
-def pcm_to_wav(pcm_data, sample_rate=16000, channels=1, bit_depth=16):
-    wav_file = wave.open("temp_audio.wav", 'wb')
-    wav_file.setnchannels(channels)
-    wav_file.setsampwidth(bit_depth // 8)
-    wav_file.setframerate(sample_rate)
-    wav_file.writeframes(pcm_data)
-    wav_file.close()
-    return "temp_audio.wav"
 
-# NEW: Use Gemini TTS for a more robust multilingual experience
-def text_to_speech(text, lang_code='en'):
-    # The Gemini API will automatically use the correct voice for the language
-    # No need to manually specify a voice name here
-    payload = {
-        "contents": [{
-            "parts": [{"text": text}]
-        }],
-        "generationConfig": {
-            "responseModalities": ["AUDIO"],
-            "speechConfig": {
-                "voiceConfig": {
-                    "prebuiltVoiceConfig": {
-                        # We can specify a voice, but it's best to let Gemini handle it
-                        # based on the language of the prompt.
-                        # We can add more specific voice options later if needed.
-                        "voiceName": "Kore"
-                    }
-                }
-            }
-        },
-        "model": "gemini-2.5-flash-preview-tts"
-    }
-
-    headers = {
-        'Content-Type': 'application/json'
-    }
-
+# Modified to accept a language parameter
+def text_to_speech(text, lang='en'): # Default to 'en'
     try:
         ts = int(time.time() * 1000)
-        filename = f"static/response_{ts}.wav"
-        
-        logger.info(f"Generating TTS audio for text: '{text}' using Gemini TTS API...")
-        response = requests.post(f"{GEMINI_TTS_URL}?key={GEMINI_API_KEY}", headers=headers, json=payload, timeout=30)
-        response.raise_for_status()
-        
-        result = response.json()
-        audio_data_base64 = result.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('inlineData', {}).get('data')
-
-        if not audio_data_base64:
-            logger.error("Gemini TTS API returned no audio data.")
-            return None
-        
-        audio_data_pcm = base64.b64decode(audio_data_base64)
-        
-        # Write PCM data to a temporary WAV file
-        with wave.open(filename, 'wb') as wav_file:
-            wav_file.setnchannels(1)  # Mono
-            wav_file.setsampwidth(2)  # 16-bit
-            wav_file.setframerate(16000) # 16kHz
-            wav_file.writeframes(audio_data_pcm)
-
+        filename = f"static/response_{ts}.mp3"
+        # gTTS will try to auto-detect if lang is not provided or invalid, but explicit is better
+        # For 'hi' (Hindi) and 'ur' (Urdu) specifically, gTTS supports them.
+        gTTS(text, lang=lang).save(filename) 
         return filename
-
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error calling Gemini TTS API: {e}")
-        return None
     except Exception as e:
-        logger.error(f"An error occurred during TTS generation: {e}")
-        return None
+        logger.error(f"TTS error for language '{lang}': {e}")
+        # Fallback to English if the specific language fails
+        try:
+            filename = f"static/response_{ts}_en_fallback.mp3"
+            gTTS(text, lang='en').save(filename)
+            return filename
+        except Exception as fallback_e:
+            logger.error(f"TTS fallback to English failed: {fallback_e}")
+            return None
 
 def cleanup_audio_files():
-    for f in glob.glob("static/response_*.wav"):
+    for f in glob.glob("static/response_*.mp3"):
         try:
             file_mod_time = datetime.fromtimestamp(os.path.getmtime(f))
             if datetime.now() - file_mod_time > timedelta(hours=1):
@@ -650,7 +595,7 @@ def transcribe():
         segments, info = model.transcribe(path)
         transcribed_text = " ".join([segment.text for segment in segments])
         detected_language = info.language # Extract detected language
-
+        
         return jsonify({"text": transcribed_text, "language": detected_language}) # Return language
     except Exception as e:
         logger.error(f"Transcription error: {e}")
@@ -664,33 +609,22 @@ def process_command():
     request_data = request.get_json()
     text = request_data.get("text", "")
     # Get language from request (sent by frontend for voice input, or None for text input)
-    input_language = request_data.get("language", None)
+    input_language = request_data.get("language", None) 
     user_auth_token = request.headers.get('Authorization', '').replace('Bearer ', '')
-
-    # NEW: Detect language if it's a text input and not provided by the frontend
-    if not input_language:
-        try:
-            # langdetect returns a two-letter language code like 'en', 'ur', 'hi'
-            detected_lang_code = detect(text)
-            input_language = detected_lang_code
-            logger.info(f"Detected language for text input: {input_language}")
-        except LangDetectException:
-            logger.warning("Could not detect language for text input. Defaulting to English.")
-            input_language = 'en' # Fallback to English
 
     logger.info(f"Processing command: '{text}' in language: {input_language}")
     logger.info(f"Received user_auth_token: {'Present' if user_auth_token else 'Absent'}")
-
+    
     # Pass input_language to parse_command so Gemini can be instructed
-    intent, entity_name, entity_type, light_num, cartons_sold, cartons_produced, buyer, desired_power_state = parse_command(text, input_language)
-
+    intent, entity_name, entity_type, light_num, cartons_sold, cartons_produced, buyer, desired_power_state = parse_command(text, input_language) 
+    
     response_text = "I'm sorry, I couldn't understand your command or extract enough information."
 
     if intent == "greeting":
         greeting_response = "Hello there! How can I assist you with the factory today?"
         # Use detected language for TTS
-        audio_file = text_to_speech(greeting_response, lang_code=input_language if input_language else 'en')
-        audio_name = os.path.basename(audio_file) if audio_file else None
+        audio_file = text_to_speech(greeting_response, lang=input_language if input_language else 'en') 
+        audio_name = os.path.basename(audio_file) if audio_file else None 
         return jsonify({
             "response": greeting_response,
             "audio_filename": audio_name,
@@ -699,16 +633,16 @@ def process_command():
 
     if intent:
         action_intents = ["toggle_lights", "toggle_machine_power", "record_sale", "record_cartons"]
-
+        
         if intent in action_intents:
             response_text = perform_action(intent, entity_name, entity_type, light_num, cartons_sold, cartons_produced, buyer, user_auth_token, desired_power_state)
         else:
             response_text = get_sensor_data(intent, entity_name, entity_type)
-
+        
         logger.info(f"Generated response: {response_text}")
         # Use detected language for TTS
-        audio_file = text_to_speech(response_text, lang_code=input_language if input_language else 'en')
-        audio_name = os.path.basename(audio_file) if audio_file else None
+        audio_file = text_to_speech(response_text, lang=input_language if input_language else 'en') 
+        audio_name = os.path.basename(audio_file) if audio_file else None 
         return jsonify({
             "response": response_text,
             "audio_filename": audio_name,
@@ -717,7 +651,7 @@ def process_command():
     logger.warning(f"Could not understand command: {text}")
     could_not_understand_response = f"I'm sorry, I couldn't understand: {text}"
     # Use detected language for "could not understand" response as well
-    audio_file = text_to_speech(could_not_understand_response, lang_code=input_language if input_language else 'en')
+    audio_file = text_to_speech(could_not_understand_response, lang=input_language if input_language else 'en')
     audio_name = os.path.basename(audio_file) if audio_file else None
     return jsonify({
         "error": could_not_understand_response,
@@ -729,7 +663,7 @@ def process_command():
 @app.route("/audio/<filename>", methods=["GET"])
 def serve_audio(filename):
     try:
-        return send_file(os.path.join("static", filename), mimetype="audio/wav")
+        return send_file(os.path.join("static", filename), mimetype="audio/mpeg")
     except FileNotFoundError:
         logger.error(f"Audio file not found: {filename}")
         return jsonify({"error": "File not found"}), 404
