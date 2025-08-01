@@ -47,18 +47,7 @@ def get_whisper_model():
         get_whisper_model.model = WhisperModel("tiny", device="cpu", compute_type="int8")
         logger.info("Faster-whisper model loaded.")
     return get_whisper_model.model
-
-# MongoDB setup (kept for analytics if still needed, but sensor data will come from external API)
-try:
-    MONGODB_URI = os.environ.get("MONGODB_URI", "mongodb+srv://factory:1234@cluster0.t2zyjyl.mongodb.net/SmartFactory")
-    client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
-    db = client["SmartFactory"] 
-    analytics = db["analytics"]
-    client.server_info()
-    logger.info("MongoDB connection successful.")
-except Exception as e:
-    logger.error("MongoDB connection failed: %s", e)
-
+    
 # External MERN API Configuration
 EXTERNAL_API_BASE_URL = "https://model-deployed-production.up.railway.app" 
 
