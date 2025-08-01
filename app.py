@@ -574,27 +574,30 @@ def health():
     return jsonify({"status": "healthy"})
 
 @app.route("/transcribe", methods=["POST"])
+@app.route("/transcribe", methods=["POST"])
 def transcribe():
-
     if "audio" not in request.files:
         return jsonify({"error": "No audio file provided"}), 400
     path = "temp.wav"
     try:
         request.files["audio"].save(path)
         model = get_whisper_model()
-        segments, info = model.transcribe(path, language=None)
+        segments, info = model.transcribe(path, language=None)  # Ensure language is auto-detected
         transcribed_text = " ".join([segment.text for segment in segments])
         detected_language = info.language
-        
+
+        # Fallback if Whisper fails to detect language
         if not detected_language:
-            from langdetect import detect
             try:
                 detected_language = detect(transcribed_text)
-            except:
-                detected_language = 'ur'  # fallback
+                logger.info(f"[FALLBACK] langdetect guessed: {detected_language}")
+            except LangDetectException as e:
+                logger.warning(f"[LANGDETECT FAIL] Could not detect language from text: {e}")
+                detected_language = "en"  # Final fallback
 
-        
-        return jsonify({"text": transcribed_text, "language": detected_language}) # Return language
+        logger.info(f"[TRANSCRIBE RESULT] Text: {transcribed_text} | Language: {detected_language}")
+        return jsonify({"text": transcribed_text, "language": detected_language})
+
     except Exception as e:
         logger.error(f"Transcription error: {e}")
         return jsonify({"error": str(e)}), 500
