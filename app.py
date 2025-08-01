@@ -646,6 +646,7 @@ def process_command():
     tts_lang = lang_map.get(input_language, 'en') if input_language else 'en'
     if tts_lang != 'en':
         greeting_response = translate_text(greeting_response, tts_lang)
+        logger.info(f"[TRANSLATED GREETING] {greeting_response}")
         audio_file = text_to_speech(greeting_response, lang=input_language if input_language else 'en') 
         audio_name = os.path.basename(audio_file) if audio_file else None 
         return jsonify({
@@ -665,6 +666,7 @@ def process_command():
         tts_lang = lang_map.get(input_language, 'en') if input_language else 'en'
         if tts_lang != 'en':
             response_text = translate_text(response_text, tts_lang)
+        logger.info(f"[TRANSLATED TEXT] {response_text}")
         logger.info(f"Generated response: {response_text}")
         # Use detected language for TTS
         audio_file = text_to_speech(response_text, lang=input_language if input_language else 'en') 
@@ -680,6 +682,7 @@ def process_command():
     tts_lang = lang_map.get(input_language, 'en') if input_language else 'en'
     if tts_lang != 'en':
         could_not_understand_response = translate_text(could_not_understand_response, tts_lang)
+    logger.info(f"[TRANSLATED ERROR] {could_not_understand_response}")
     audio_file = text_to_speech(could_not_understand_response, lang=tts_lang)
     audio_name = os.path.basename(audio_file) if audio_file else None
     return jsonify({
